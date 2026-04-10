@@ -87,13 +87,20 @@ MyLeanTermAuditor/
   opencode.json               # lean-lsp-mcp config
   .opencode/skills/lean4/     # lean4-skills pack
   plan.md                     # this file
-  MyLeanTermAuditor.lean      # root import (imports Basic + Audit)
+  MyLeanTermAuditor.lean      # root import (re-exports all modules)
   MyLeanTermAuditor/
     Basic.lean                # placeholder (from lake init)
-    Audit.lean                # core auditor + filtering + stack traces
+    Types.lean                # data types: Finding, ExprStep, ExprPath, AuditEntry,
+                              #   AuditResult, ConstContext, DescendContext, AuditConfig
+    Classify.lean             # getExternSymbol?, classifyConst
+    Traverse.lean             # TraversalState, auditExpr, auditConst
+    StackTrace.lean           # StackFrame, toFrames, toStackTrace, toCompactTrace
+    Filter.lean               # Filter/Descend combinators, convenience configs
   Main.lean                   # demo: three #eval audits of myMain
   Explore.lean                # scratch file for API exploration (can delete)
 ```
+
+Dependency chain: `Types ← Classify ← Traverse`, `Types ← StackTrace ← Filter`.
 
 ---
 
@@ -177,7 +184,11 @@ Prove that `shouldReport cctx = true ∧ cctx.finding = some f → entry ∈ res
 
 ## Key Files to Read
 
-- **`MyLeanTermAuditor/Audit.lean`** — all the auditor logic, filtering, stack traces
+- **`MyLeanTermAuditor/Types.lean`** — all data types and config structures
+- **`MyLeanTermAuditor/Traverse.lean`** — core expression walker with path tracking and proof-term detection
+- **`MyLeanTermAuditor/Filter.lean`** — composable filter/descent predicates and convenience configs
+- **`MyLeanTermAuditor/StackTrace.lean`** — compile-time stack trace rendering
+- **`MyLeanTermAuditor/Classify.lean`** — constant classification (axiom/opaque/extern)
 - **`Main.lean`** — three demo audits (full, runtime externs, runtime all)
 - **`opencode.json`** — MCP server config (lean-lsp-mcp)
 - **`.opencode/skills/lean4/SKILL.md`** — lean4 skill (loaded via `skill` tool)
