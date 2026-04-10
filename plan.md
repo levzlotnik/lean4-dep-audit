@@ -27,54 +27,145 @@ Lean's `#print axioms` only reports axioms and only at the command level. We wan
 - **lean-lsp-mcp** configured as local MCP server in `opencode.json` — gives sub-second LSP feedback (goals, diagnostics, hover, search)
 - **lean4-skills** installed at `.opencode/skills/lean4/` — workflow/proving skill pack
 
-### Core Auditor (working)
+### Two-Pass Auditor (working)
 
-**`MyLeanTermAuditor/Audit.lean`** — the auditor is implemented and working:
+The auditor uses a two-pass design: a fast pure first pass for classification + DAG construction, and an instant pure second pass for interactive drill-down queries.
 
-- `Finding` — inductive: `axiom_`, `opaque_`, `extern_ (sym : String)`
-- `ExprStep` — inductive: 13 variants for path tracking (`appFn`, `appArg`, `lamType`, `lamBody`, `forallType`, `forallBody`, `letType`, `letVal`, `letBody`, `mdata`, `proj`, `constDef name`, `constType name`)
-- `ExprPath` — abbreviation for `Array ExprStep`, with `ToString`, `toFrames`, `toStackTrace`, `toCompactTrace`
-- `StackFrame` — struct: constant name, isDef, localSteps within that frame
-- `AuditEntry` — struct: `name`, `finding`, `path`, `inProofTerm`
-- `AuditResult` — struct: `entries : Array AuditEntry`, `visited : NameHashSet`
-- `ConstContext` — rich predicate context: `env`, `name`, `ci`, `path`, `levels`, `finding`, `inProofTerm`
-- `DescendContext` — structural predicate context: `step`, `path`, `currentConst?`, `inProofTerm`
-- `AuditConfig` — three predicates:
-  - `shouldRecurse : ConstContext → Bool` — controls traversal at constant boundaries
-  - `shouldReport : ConstContext → Bool` — controls what appears in output
-  - `shouldDescend : DescendContext → Bool` — controls traversal at structural positions
-- `TraversalState` — threads `currentConst?` and `inProofTerm` through recursion
-- `isTheorem` — helper to detect `.thmInfo` constants
+#### Pass 1: Classification + DAG (`auditConst`)
+
+**Signature:** `Environment → AuditConfig → Name → AuditResult → AuditResult` (pure, no MetaM)
+
+Walks every `Expr` reachable from the root constant, following `.const` references into the `Environment`. Each constant body is traversed exactly once (guarded by `visited : NameHashSet`). Accepts a `prior : AuditResult` accumulator for incremental/bulk audits. At each constant:
+
+1. Classify via `classifyConst` (axiom/opaque with sub-kind/extern or uninteresting)
+2. If it's a finding and `shouldReport`: upsert `FindingInfo` with reachability flags
+3. If first encounter: add to `visited`, compute reverse dep edges via `Expr.foldConsts`
+4. If `shouldRecurse`: recurse into `ci.type` and `ci.value?`
+
+No paths stored. No `MetaM`. The `ExprPath` is not threaded through the first pass at all — the `ConstContext` carries only `depth : Nat` and `constStack : Array Name` for filter predicates.
+
+**Output:** `AuditResult` containing:
+- `findings : NameMap FindingInfo` — interesting constants with classification, reachability flags (`reachableAtRuntime`, `reachableInProof`), source location, and encounter count
+- `visited : NameHashSet` — all traversed constants
+- `reverseDeps : NameMap NameHashSet` — the constant-level dependency DAG (child → {parents})
+
+**Source locations** are filled in by a separate `resolveLocations : AuditResult → MetaM AuditResult` step that calls `findDeclarationRanges?` for each finding. This is the only part that needs `MetaM` (really just `MonadEnv + MonadLiftT BaseIO`).
+
+#### Pass 2: Interactive Drill-Down (`drillDown`)
+
+**Signature:** `Environment → Name → Name → AuditResult → DrillResult` (pure)
+
+Answers the question: "which direct dependencies of `from_` transitively reach `target`?"
+
+Algorithm:
+1. `findAncestors(target)` — BFS upward from target through `reverseDeps` to get the set of all constants that transitively reference it
+2. `immediateDeps(from_)` — `Expr.foldConsts` over `from_`'s type + value to get its direct constant references
+3. Intersect: which of `from_`'s direct deps are in the ancestor set?
+
+This is O(ancestors + children) per query — effectively instant.
+
+#### Opaque Sub-Classification
+
+Opaque constants are sub-classified via `OpaqueKind`:
+- `partial_` — `partial def`, has a Lean body but no termination proof
+- `initialize_` — `initialize`/`builtin_initialize` ref, value computed at module init
+- `implementedBy_` — body is `@default T inst`, typically a `NonemptyType` implementation
+- `other` — catch-all for unclassified opaques
+
+Detection uses `Lean.hasInitAttr`, `Lean.isIOUnitInitFn`, `Lean.isIOUnitBuiltinInitFn`, and `OpaqueVal.value.isAppOfArity ``default 2`.
+
+#### `#audit` Command
+
+Two syntax forms, shared elaborator:
+
+```lean
+#audit myMain                                        -- single constant, standard config
+#audit myMain with AuditConfig.runtimeExterns         -- single constant, custom config
+#audit (myMain, myOther)                              -- multiple constants (shared AuditResult)
+#audit (myMain, myOther) with { drill := [`propext] } -- multi + drill
+#audit myMain with { shouldReport := Filter.externsOnly }  -- inline custom config
+```
+
+The `with` clause accepts any expression of type `AuditConfig`, including user-defined configs. Uses `atomic` + `colGt` for clean parsing without ambiguity.
+
+**Standard config** (`AuditConfig.standard`) — the default when no `with` is given:
+- **Skips stdlib recursion**: does not traverse into constants from `Init`, `Lean`, `Std`, or `Mathlib` modules (checked by module name, not constant name)
+- **Reports non-standard axioms**: any `axiom` beyond `propext`, `Quot.sound`, `Classical.choice` — these indicate dismissed proof obligations
+- **Reports non-standard runtime externs**: `@[extern]` constants from user code (not stdlib)
+- **Skips proof-term descent**: no Omega/decidability machinery noise
+
+For a project using only stdlib, the standard config correctly reports 0 findings.
+
+#### `AuditM` Monad
+
+`AuditM := StateT AuditResult MetaM` — thin wrapper for the outer orchestration layer. The pure core functions (`auditConst`, `drillDown`) don't need it. `AuditM` is for sequencing multiple audits, resolving locations, and running drill queries through a shared state.
+
+#### Data Types
+
+**`Types.lean`:**
+- `OpaqueKind` — inductive: `partial_`, `initialize_`, `implementedBy_`, `other`
+- `Finding` — inductive: `axiom_`, `opaque_ (kind : OpaqueKind)`, `extern_ (sym : String)`
+- `ExprStep` — inductive: 13 variants for path tracking (future use)
+- `ExprPath` — abbreviation for `Array ExprStep`
+- `SourceLocation` — struct: `module : Name`, `range? : Option DeclarationRange`
+- `FindingInfo` — struct: `name`, `finding`, `location`, `reachableAtRuntime`, `reachableInProof`, `numEncounters`
+- `AuditResult` — struct: `findings`, `visited`, `reverseDeps`
+- `DrillResult` — struct: `from_`, `target`, `children : List Name`
+- `ConstContext` — lightweight predicate context: `env`, `name`, `ci`, `levels`, `finding`, `inProofTerm`, `depth`, `constStack`
+- `DescendContext` — structural predicate context: `step`, `currentConst?`, `inProofTerm`
+- `AuditConfig` — struct: `shouldRecurse`, `shouldReport`, `shouldDescend` (predicates) + `drill : List Name`
+
+**`Classify.lean`:**
 - `getExternSymbol?` — extracts extern symbol from `ExternAttrData.entries`
-- `classifyConst` — classifies `ConstantInfo` as interesting or not
-- `auditExpr` — partial recursive `Expr` walker with path tracking, proof-term detection, and three-predicate filtering
-- `auditConst` — entry point: looks up a name in the `Environment`, audits its type and value
+- `classifyOpaqueKind` — sub-classifies opaques using init attrs and value shape
+- `classifyConst` — classifies `ConstantInfo` as interesting or not (externs take priority over opaques)
 
-**Filter combinators** (`Filter` namespace):
-- `byName`, `inNamespaces`, `notInNamespaces` — name-based filtering
-- `axiomsOnly`, `opaquesOnly`, `externsOnly` — finding-type filters
-- `runtimeOnly`, `kernelOnly` — runtime vs kernel-time classification
-- `maxDepth`, `pathThrough`, `hasAnyFinding` — structural filters
-- `and`, `or`, `not` — boolean combinators
+**`Traverse.lean`:**
+- `TraversalState` — threads `currentConst?`, `inProofTerm`, `depth`, `constStack`
+- `recordDepsFor` — computes reverse dep edges for a constant via `Expr.foldConsts`
+- `auditExpr` — partial recursive `Expr` walker (pure, no paths)
+- `auditConst` — entry point for pass 1, accepts `prior : AuditResult` accumulator
+- `resolveLocations` — fills in source locations (MetaM)
+- `findAncestors` — BFS on reverse dep graph
+- `immediateDeps` — `foldConsts` for a single constant
+- `drillDown` — entry point for pass 2
 
-**Descent combinators** (`Descend` namespace):
-- `skipProofTerms` — prunes entire proof subtree (theorem values)
-- `skipTypes` — skips `forallType`/`lamType`/`letType` positions
-- `all` — default, descend everywhere
-- `and`, `or` — boolean combinators
+**`Monad.lean`:**
+- `AuditM` — `StateT AuditResult MetaM`
+- `auditConstM`, `auditConstsM` — monadic wrappers with shared state
+- `resolveLocationsM`, `drillDownM` — monadic wrappers
+- `AuditM.run'`, `AuditM.exec` — runners
 
-**Convenience configs**:
-- `AuditConfig.default` — recurse everywhere, report everything
-- `AuditConfig.trustPrefixes` — skip recursing into given namespaces
-- `AuditConfig.runtimeOnly` — skip proof terms, report runtime deps
-- `AuditConfig.runtimeExterns` — skip proof terms, report only runtime externs
-- `AuditConfig.axiomsOnly` — report only axioms
+**`Command.lean`:**
+- Syntax: `#audit ident ("with" term)?` and `#audit "(" ident,+ ")" ("with" term)?`
+- `extractNames`, `extractConfigStx`, `evalConfig` — syntax parsing
+- `formatFinding`, `formatSection`, `formatAuditSummary`, `formatDrill` — output formatting
+- `runAudit` — shared elaborator: parses syntax, evaluates config, runs pipeline, displays results
 
-**`Main.lean`** — three demo audits of `myMain : IO Unit`:
+**`StackTrace.lean`:**
+- `StackFrame`, `ExprPath.toFrames`, `toStackTrace`, `toCompactTrace` — compile-time stack trace rendering (for future use in detailed path pass)
+- `DrillResult.toTraceString` — pretty-print drill results
 
-1. **Full audit**: 4300 constants visited, 91 findings (3 axioms, 6 opaques, 82 externs) — all with `[kernel-time]` tags where applicable
-2. **Runtime externs**: 703 constants visited, 56 externs — proof machinery eliminated
-3. **Runtime all**: 703 constants visited, 60 findings (4 opaques, 56 externs)
+**`Filter.lean`:**
+- `Filter.byName`, `inNamespaces`, `notInNamespaces` — name-based filtering
+- `Filter.axiomsOnly`, `opaquesOnly`, `partialsOnly`, `initializeOnly`, `externsOnly` — finding-type filters
+- `Filter.runtimeOnly`, `kernelOnly` — runtime vs kernel-time classification
+- `Filter.isStandardAxiom`, `isStandardLibrary`, `nonStandardAxiomsOnly`, `nonStandardExternsOnly` — standard library filtering (module-based)
+- `Filter.maxDepth`, `pathThrough`, `hasAnyFinding` — structural filters
+- `Filter.and`, `or`, `not` — boolean combinators
+- `Descend.skipProofTerms`, `skipTypes`, `all` — descent predicates
+- `Descend.and`, `or` — boolean combinators
+- `AuditConfig.default`, `standard`, `trustPrefixes`, `runtimeOnly`, `runtimeExterns`, `axiomsOnly` — convenience configs
+
+#### Demo Results (`Main.lean`)
+
+Five demos on `myMain : IO Unit` (reads stdin, prints greeting):
+
+1. **Standard audit:** 25 constants visited, 0 findings (correct — pure stdlib user code)
+2. **Runtime externs:** 703 constants visited, 58 externs (all stdlib — filtered out by standard config)
+3. **Full audit (AuditConfig.default):** 4300 constants visited, 91 findings (3 axioms, 3 opaques, 85 externs)
+4. **Drill-down:** "Why does myMain depend on propext?" → IO.println, String.Slice.instToString, instAppendString, String.trimAscii
+5. **Multiple constants:** `(myMain, main)` — shared AuditResult, 25 visited, 0 findings
 
 ### Project Structure
 
@@ -90,53 +181,87 @@ MyLeanTermAuditor/
   MyLeanTermAuditor.lean      # root import (re-exports all modules)
   MyLeanTermAuditor/
     Basic.lean                # placeholder (from lake init)
-    Types.lean                # data types: Finding, ExprStep, ExprPath, AuditEntry,
-                              #   AuditResult, ConstContext, DescendContext, AuditConfig
-    Classify.lean             # getExternSymbol?, classifyConst
-    Traverse.lean             # TraversalState, auditExpr, auditConst
-    StackTrace.lean           # StackFrame, toFrames, toStackTrace, toCompactTrace
-    Filter.lean               # Filter/Descend combinators, convenience configs
-  Main.lean                   # demo: three #eval audits of myMain
-  Explore.lean                # scratch file for API exploration (can delete)
+    Types.lean                # OpaqueKind, Finding, FindingInfo, AuditResult, DrillResult, AuditConfig
+    Classify.lean             # getExternSymbol?, classifyOpaqueKind, classifyConst
+    Traverse.lean             # auditConst (pass 1), drillDown (pass 2), resolveLocations
+    Monad.lean                # AuditM, monadic wrappers
+    Command.lean              # #audit command elaborator
+    StackTrace.lean           # StackFrame, toFrames, toStackTrace, DrillResult.toTraceString
+    Filter.lean               # Filter/Descend combinators, standard library detection, convenience configs
+  Main.lean                   # demos: standard, runtime externs, full, drill, multi-constant
 ```
 
-Dependency chain: `Types ← Classify ← Traverse`, `Types ← StackTrace ← Filter`.
+Dependency chain: `Types ← Classify ← Traverse ← Monad ← Command`, `Types ← StackTrace ← Filter`.
 
 ---
 
-## Design: Core Auditor
+## Design Decisions & Lessons Learned
 
-### Traversal
+### Why pure Environment, not MetaM?
 
-Walk `Expr` recursively. At every `Expr.const name levels`:
-1. Skip if already in visited set (cycle detection)
-2. Look up `name` in `Environment` via `env.find?`
-3. Classify via `classifyConst` (axiom/opaque/extern or uninteresting)
-4. Build `ConstContext` with full info (env, name, ci, path, levels, finding, inProofTerm)
-5. If `shouldReport cctx`, add to entries (with path and `inProofTerm` flag)
-6. If `shouldRecurse cctx`, recurse into `ci.type` and `ci.value?`
-   - When entering a theorem's value, flip `inProofTerm` to `true`
+We initially moved the first pass into `MetaM` with `withLocalDecl` at binder positions (`lam`, `forallE`, `letE`) so that `inferType` would work inside binder bodies. This caused heartbeat timeouts: 4300 constants × deep binder nesting = hundreds of thousands of `whnf` calls for zero benefit, since we never call `inferType` in the first pass.
 
-At every structural position (app, lam, forall, let, mdata, proj):
-7. Build `DescendContext` with step, path, currentConst?, inProofTerm
-8. If `shouldDescend dctx`, recurse into the subexpression
+`withLocalDecl` does real work — creates fresh fvars, extends the `LocalContext`, type-checks the binder type via `whnf` — and none of that is needed when you're just scanning for `.const` nodes, which are global references that never contain bound variables.
 
-All state is threaded via `TraversalState` (currentConst?, inProofTerm) and `AuditResult` (entries, visited).
+**Rule:** only use `MetaM` when you actually need the local context (e.g., `inferType`, `isDefEq`). For finding `.const` nodes, a pure `Environment`-based walk is sufficient and much faster.
 
-### Configuration
+### Why two passes?
 
-Three predicates, all caller-supplied via `AuditConfig`:
-- `shouldRecurse : ConstContext → Bool` — enter this constant's definition/type?
-- `shouldReport : ConstContext → Bool` — include this in the output?
-- `shouldDescend : DescendContext → Bool` — recurse into this subexpression?
+The original single-pass design stored an `ExprPath` (full structural path from root) per finding encounter. This caused path explosion: extern constants like `Array.size` appear 1.5 million times across all 4300 constant bodies. Storing a path per encounter blew up both memory and time.
 
-These are independent and composable via the `Filter`/`Descend` combinator libraries.
+The key insight: the developer doesn't need all paths up front. They need (1) a summary of what's interesting and (2) a way to drill into specific findings on demand.
 
-### Runtime vs Kernel-time
+**Pass 1** is optimized for speed: no paths, just flags and a DAG. **Pass 2** is optimized for precision: answers "which of X's deps lead to Y?" instantly via set intersection on the pre-computed DAG.
 
-Every `AuditEntry` carries `inProofTerm : Bool`:
-- **Runtime** (`inProofTerm = false`): externs/opaques your compiled binary calls
-- **Kernel-time** (`inProofTerm = true`): externs/axioms the kernel evaluates during type-checking (e.g. `Lean.Omega` proof machinery using `Int.ediv`, `Nat.gcd`)
+### Why reverseDeps (child → {parents}) not forward deps?
+
+The user's query starts at the finding (child) and asks "how do I get here from root?" The BFS in `findAncestors` walks upward from the target through parents to find all constants that transitively reach it. This direction is natural for `child → {parents}` and would require reversing the whole graph for `parent → {children}`.
+
+Forward deps are computed on-the-fly by `immediateDeps` (a single `foldConsts` call) only when needed.
+
+### Why not store paths in the DAG?
+
+Enumerating all paths from root to target is combinatorially explosive (diamond dependencies in the DAG). For `propext` with 1213 encounters, there could be millions of distinct constant chains. Nobody wants to read them.
+
+Instead, `drillDown` answers the actionable question: "which of my direct dependencies are responsible?" The developer can iterate level by level, which is both tractable and useful for debugging.
+
+### Performance: `#audit` command vs CLI
+
+The `#audit` command runs at elaboration time. When a custom config is provided via `with`, the config expression is evaluated using `evalExpr`, which uses the Lean **interpreter**. The resulting config closures (`shouldReport`, `shouldDescend`) are interpreted closures. When the compiled `auditConst` core calls these closures millions of times, each call crosses from compiled code into the interpreter — this is the primary performance bottleneck (~27s for a full traversal).
+
+The standard config without `with` also runs at elaboration time but avoids `evalExpr`. Performance is still limited by the fact that the whole pipeline runs during elaboration.
+
+**The `#audit` command is best for localized hints in Lean scripts.** For bulk audits and full-speed execution, the planned CLI executable (`lake exe audit`) will run everything as compiled native code — no interpreter overhead.
+
+### Standard config design
+
+The default `AuditConfig.standard` is designed for the primary use case: "does my project have any non-standard trust assumptions?"
+
+- **Skips stdlib traversal** (module-based, not name-based): `IO.getStdin` lives in module `Init.System.IO`, so we check the module prefix, not the constant's namespace
+- **Skips standard axioms**: `propext`, `Quot.sound`, `Classical.choice` are foundations, not trust concerns
+- **Reports non-standard axioms**: custom `axiom` declarations indicate dismissed proof obligations
+- **Reports non-standard runtime externs**: user `@[extern]` bindings are real trust boundaries
+- **Skips proof descent**: kernel-time dependencies (Omega, decidability) are noise for most users
+
+For a project that only uses the Lean standard library, this correctly reports 0 findings. Custom externs and axioms light up immediately.
+
+### Opaque sub-classification
+
+Lean 4 uses `opaque` in the Environment for several distinct purposes. We detect and sub-classify them:
+- **`partial_`**: value has actual body structure (lambdas, lets) — it's a `partial def`
+- **`initialize_`**: has `[init]` attribute or is `isIOUnitInitFn` — runtime init ref
+- **`implementedBy_`**: value is `@default T inst` but no init attr — `NonemptyType` implementation
+- **`other`**: catch-all — if users hit this, they report it and we add a category
+
+---
+
+## Runtime vs Kernel-time
+
+Every `FindingInfo` carries `reachableAtRuntime` and `reachableInProof` flags:
+- **Runtime** (`reachableAtRuntime = true`): externs/opaques your compiled binary calls
+- **Kernel-time** (`reachableInProof = true`): externs/axioms the kernel evaluates during type-checking (e.g. `Lean.Omega` proof machinery using `Int.ediv`, `Nat.gcd`)
+
+A constant can be both (e.g., `Array.push` is used in runtime code and in proof automation).
 
 Both are real dependencies with real trust assumptions — they just answer different questions ("what C code does my binary link?" vs "what C code does the kernel trust when checking proofs?").
 
@@ -144,52 +269,80 @@ Both are real dependencies with real trust assumptions — they just answer diff
 
 ## Next Steps
 
-### 1. `#audit` command
+### 1. Test suite (`tests/` directory)
 
-Create a command elaborator so users can write:
-```lean
-#audit myMain
-#audit myMain (mode := .runtimeExterns)
-#audit myMain (trust := [Init, Std])
+Create a `tests/` directory with Lean files that exercise different audit scenarios. Each test file defines constants with specific characteristics, and Main.lean (or a test runner) audits them and verifies expected results.
+
+**Test cases to cover:**
+
+- **Custom `@[extern]` binding**: define a function with `@[extern "my_c_fn"]` — should appear in standard config
+- **Custom `axiom`**: declare `axiom myAxiom : ...` — should appear as non-standard axiom
+- **`sorry`-based proofs**: use `sorry` in a proof — should appear (sorry is an axiom)
+- **`partial def`**: define a `partial def` — should appear as `opaque (partial)` with full config
+- **`initialize` ref**: use `initialize` to create a ref — should appear as `opaque (initialize)` with full config
+- **`implemented_by`**: opaque + `@[implemented_by]` — should appear as `opaque (implemented_by)` with full config
+- **Mixed runtime + kernel-time**: constant used in both runtime code and proof terms
+- **Pure stdlib user**: code that only uses Init/Std — standard config should report 0 findings
+- **Drill-down**: known dependency chain, verify drill output matches expected children
+- **Multi-constant audit**: shared `AuditResult` accumulator correctly deduplicates
+- **Custom `AuditConfig`**: user-defined config with custom predicates works via `with`
+
+**Structure:**
+```
+tests/
+  TestExtern.lean        # @[extern] bindings
+  TestAxiom.lean         # custom axioms, sorry
+  TestOpaque.lean        # partial def, initialize, implemented_by
+  TestMixed.lean         # mixed runtime/kernel-time
+  TestPureStdlib.lean    # stdlib-only code (expect 0 findings)
 ```
 
-Instead of the current `#eval` boilerplate. This is the biggest remaining DX win.
+Main.lean or a test harness imports these and runs `#audit` on each, verifying output. This validates the standard config's filtering logic and all finding classifications.
 
-### 2. Record the constant's instantiated type at usage site
+### 2. CLI executable (`lake exe audit`)
+
+Build a compiled executable for bulk/CI audits:
+```bash
+lake exe audit myMain
+lake exe audit myMain --config runtimeExterns
+lake exe audit --module MyModule    # all public defs in a module
+```
+
+Fully compiled — no interpreter overhead. Loads `.olean` files, runs `auditConst` natively. The main performance path.
+
+### 3. Record the constant's instantiated type at usage site
 
 When we hit `.const name levels`, record the instantiated type: `ci.type.instantiateLevelParams ci.levelParams levels`. This is pure (no MetaM needed).
 
 Tells us "this extern is being used as `Nat → Nat → Nat`" rather than just "this extern exists."
 
-### 3. (Hard) Record the expected type at the usage site
+### 4. (Hard) Record the expected type at the usage site
 
-What does the surrounding context expect at that position? This requires either:
-- Running in `MetaM` and calling `inferType` on the subexpression, or
-- Manually threading a local context through binders (lambdas/foralls/lets)
+What does the surrounding context expect at that position? This requires a third pass using `MetaM` + `withLocalDecl` + `inferType`, targeted at specific constants from the drill-down (not a full re-traversal).
 
-This would tell us "at this app argument, Lean expects a `Nat`, and `Nat.add` is providing `Nat → Nat → Nat`."
-
-### 4. Extern symbol tracing (stretch)
+### 5. Extern symbol tracing (stretch)
 
 For each extern symbol found, trace it back to the linked native library:
 - Parse `lakefile.toml` for `moreLinkArgs`
 - Find the `.a`/`.so` containing the symbol via `nm`/`objdump`
 - Optionally find C source in the workspace
 
-### 5. Admissibility proof (stretch)
+### 6. Admissibility proof (stretch)
 
-Prove that `shouldReport cctx = true ∧ cctx.finding = some f → entry ∈ result.entries`. Should be straightforward from construction but would be a nice self-referential demonstration.
+The traversal is `partial` because it follows `.const` references into the `Environment` (the new `Expr` is not structurally smaller). Termination is guaranteed by the `visited` set (at most `env.size` constants), but proving this in Lean requires well-founded recursion on `env.size - visited.size`. Could be done with a fuel parameter but would add noise to the code.
 
 ---
 
 ## Key Files to Read
 
-- **`MyLeanTermAuditor/Types.lean`** — all data types and config structures
-- **`MyLeanTermAuditor/Traverse.lean`** — core expression walker with path tracking and proof-term detection
-- **`MyLeanTermAuditor/Filter.lean`** — composable filter/descent predicates and convenience configs
+- **`MyLeanTermAuditor/Types.lean`** — all data types: OpaqueKind, Finding, FindingInfo, AuditResult, DrillResult, AuditConfig
+- **`MyLeanTermAuditor/Classify.lean`** — constant classification (axiom/opaque sub-kind/extern)
+- **`MyLeanTermAuditor/Traverse.lean`** — pass 1 (auditConst), pass 2 (drillDown), resolveLocations
+- **`MyLeanTermAuditor/Monad.lean`** — AuditM monad, monadic wrappers
+- **`MyLeanTermAuditor/Command.lean`** — `#audit` command elaborator
+- **`MyLeanTermAuditor/Filter.lean`** — composable filter/descent predicates, stdlib detection, convenience configs
 - **`MyLeanTermAuditor/StackTrace.lean`** — compile-time stack trace rendering
-- **`MyLeanTermAuditor/Classify.lean`** — constant classification (axiom/opaque/extern)
-- **`Main.lean`** — three demo audits (full, runtime externs, runtime all)
+- **`Main.lean`** — five demos: standard, runtime externs, full, drill, multi-constant
 - **`opencode.json`** — MCP server config (lean-lsp-mcp)
 - **`.opencode/skills/lean4/SKILL.md`** — lean4 skill (loaded via `skill` tool)
 
@@ -198,11 +351,18 @@ Prove that `shouldReport cctx = true ∧ cctx.finding = some f → entry ∈ res
 - `Lean.Environment.find? : Environment → Name → Option ConstantInfo`
 - `Lean.ConstantInfo` — `.axiomInfo`, `.defnInfo`, `.thmInfo`, `.opaqueInfo`, `.inductInfo`, `.ctorInfo`, `.recInfo`, `.quotInfo`
 - `Lean.ConstantInfo.value? : ConstantInfo → Option Expr` — returns value for defn/thm/opaque
+- `Lean.OpaqueVal` — has `value : Expr`, `isUnsafe : Bool`, `all : List Name`
 - `Lean.isExtern : Environment → Name → Bool`
 - `Lean.getExternAttrData? : Environment → Name → Option ExternAttrData`
 - `ExternAttrData.entries : List ExternEntry`
 - `ExternEntry` — `.adhoc name`, `.inline name str`, `.standard name str`, `.opaque`
+- `Lean.hasInitAttr : Environment → Name → Bool` — detects `[init]` attribute
+- `Lean.isIOUnitInitFn : Environment → Name → Bool` — detects `initialize` declarations
+- `Lean.isIOUnitBuiltinInitFn : Environment → Name → Bool` — detects `builtin_initialize`
 - `Lean.Name.isPrefixOf : Name → Name → Bool` — built-in, no need to redefine
+- `Lean.Expr.foldConsts : Expr → α → (Name → α → α) → α` — fast built-in scan for all `.const` names in an expression
+- `Lean.findDeclarationRanges? : Name → m (Option DeclarationRanges)` — source location lookup (needs `MonadEnv + MonadLiftT BaseIO`)
+- `Lean.Environment.getModuleIdxFor? : Environment → Name → Option ModuleIdx` — which module a constant is from
 
 ## Tools Available
 

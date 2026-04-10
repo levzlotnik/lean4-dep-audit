@@ -6,3 +6,5 @@ import MyLeanTermAuditor.Classify
 import MyLeanTermAuditor.Traverse
 import MyLeanTermAuditor.StackTrace
 import MyLeanTermAuditor.Filter
+import MyLeanTermAuditor.Monad
+import MyLeanTermAuditor.Command

@@ -85,4 +85,12 @@ def ExprPath.toCompactTrace (path : ExprPath) (findingName : Name) : String :=
   let chain := names ++ [Name.toString findingName]
   " → ".intercalate chain
 
+/-- Pretty-print a DrillResult. -/
+def DrillResult.toTraceString (dr : DrillResult) : String :=
+  if dr.children.isEmpty then s!"  {dr.from_} does not reach {dr.target}"
+  else
+    let lines := dr.children.map fun child => s!"    {child}"
+    s!"  {dr.from_} reaches {dr.target} through {dr.children.length} direct dep(s):\n" ++
+      "\n".intercalate lines
+
 end MyLeanTermAuditor

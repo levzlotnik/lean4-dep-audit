@@ -6,106 +6,201 @@ open Lean
 
 namespace MyLeanTermAuditor
 
-/-- Internal traversal state threaded through the recursive walk. -/
+/-- Internal traversal state threaded through the first pass. -/
 structure TraversalState where
-  /-- The constant whose body we're currently inside (for DescendContext). -/
+  /-- The constant whose body we're currently inside. -/
   currentConst? : Option (Name × ConstantInfo) := none
   /-- Are we inside a proof term (theorem value)? -/
   inProofTerm   : Bool := false
+  /-- Number of constant boundaries crossed from the root. -/
+  depth         : Nat := 0
+  /-- Chain of constant names on the current stack (most recent last). -/
+  constStack    : Array Name := #[]
   deriving Inhabited
 
-/-- Core auditor: walk an `Expr`, collect interesting constants.
-    The `path` parameter tracks the traversal route from the root to each finding.
-    The `ts` parameter carries traversal state (current constant, proof term flag). -/
+/-- Record reverse dependency edges for a constant: for each `.const` in its
+    type and value, add `child → parent` to the reverse dep graph.
+    Uses `Expr.foldConsts` — a fast built-in scan. -/
+def recordDepsFor (parent : Name) (ci : ConstantInfo) (s : AuditResult) : AuditResult :=
+  let children : NameHashSet :=
+    ci.type.foldConsts {} fun name (set : NameHashSet) => set.insert name
+  let children : NameHashSet := match ci.value? with
+    | some v => v.foldConsts children fun name (set : NameHashSet) => set.insert name
+    | none   => children
+  children.fold (init := s) fun s child =>
+    let parents := match s.reverseDeps.find? child with
+      | some set => set.insert parent
+      | none     => ({} : NameHashSet).insert parent
+    { s with reverseDeps := s.reverseDeps.insert child parents }
+
+/-- First pass: walk an `Expr`, classify constants, build dep graph.
+    Pure function — no MetaM, no paths, no local context. -/
 partial def auditExpr (env : Environment) (config : AuditConfig) (e : Expr)
-    (path : ExprPath) (ts : TraversalState) (state : AuditResult) : AuditResult :=
-  go e path ts state
+    (ts : TraversalState) (s : AuditResult) : AuditResult :=
+  go e ts s
 where
-  /-- Try to descend into a subexpression, checking `shouldDescend` first. -/
-  descend (e : Expr) (step : ExprStep) (path : ExprPath) (ts : TraversalState)
-      (s : AuditResult) : AuditResult :=
+  descend (e : Expr) (step : ExprStep) (ts : TraversalState) (s : AuditResult) : AuditResult :=
     let dctx : DescendContext := {
       step          := step
-      path          := path
       currentConst? := ts.currentConst?
       inProofTerm   := ts.inProofTerm
     }
-    if config.shouldDescend dctx then
-      go e (path.push step) ts s
-    else s
-  go (e : Expr) (path : ExprPath) (ts : TraversalState) (s : AuditResult) : AuditResult :=
+    if config.shouldDescend dctx then go e ts s else s
+
+  go (e : Expr) (ts : TraversalState) (s : AuditResult) : AuditResult :=
     match e with
     | .const name levels =>
-      if s.visited.contains name then s
-      else
-        let s := { s with visited := s.visited.insert name }
-        match env.find? name with
-        | some ci =>
-          let finding := classifyConst env ci
-          let cctx : ConstContext := {
-            env, name, ci, path, levels, finding
-            inProofTerm := ts.inProofTerm
-          }
-          -- Classify and maybe report
-          let s := if config.shouldReport cctx then
-            match finding with
-            | some f =>
-              let entry : AuditEntry := { name, finding := f, path, inProofTerm := ts.inProofTerm }
-              { s with entries := s.entries.push entry }
-            | none   => s
-          else s
-          -- Recurse into the constant's type and value if config allows
+      let bodyTraversed := s.visited.contains name
+      match env.find? name with
+      | some ci =>
+        let finding := classifyConst env ci
+        let cctx : ConstContext := {
+          env, name, ci, levels, finding
+          inProofTerm := ts.inProofTerm
+          depth       := ts.depth
+          constStack  := ts.constStack
+        }
+        -- Update finding info (flags only)
+        let s := match finding with
+          | some f =>
+            if config.shouldReport cctx then
+              match s.findings.find? name with
+              | some fi =>
+                let fi := { fi with
+                  reachableAtRuntime := fi.reachableAtRuntime || !ts.inProofTerm
+                  reachableInProof   := fi.reachableInProof || ts.inProofTerm
+                  numEncounters      := fi.numEncounters + 1
+                }
+                { s with findings := s.findings.insert name fi }
+              | none =>
+                let fi : FindingInfo := {
+                  name := name, finding := f
+                  location := { module := Name.anonymous }
+                  reachableAtRuntime := !ts.inProofTerm
+                  reachableInProof   := ts.inProofTerm
+                  numEncounters      := 1
+                }
+                { s with findings := s.findings.insert name fi }
+            else s
+          | none => s
+        -- Traverse body + record deps only on first encounter
+        if !bodyTraversed then
+          let s := { s with visited := s.visited.insert name }
+          let s := recordDepsFor name ci s
           if config.shouldRecurse cctx then
-            -- Update traversal state: entering this constant
-            let tsType : TraversalState := {
+            let tsChild : TraversalState := {
               currentConst? := some (name, ci)
               inProofTerm := ts.inProofTerm
+              depth       := ts.depth + 1
+              constStack  := ts.constStack.push name
             }
-            let s := go ci.type (path.push (.constType name)) tsType s
+            let s := go ci.type tsChild s
             match ci.value? with
             | some v =>
-              -- Entering a theorem's value flips inProofTerm to true
-              let inProof := ts.inProofTerm || isTheorem ci
-              let tsDef : TraversalState := {
-                currentConst? := some (name, ci)
-                inProofTerm := inProof
+              let tsChildDef := { tsChild with
+                inProofTerm := ts.inProofTerm || isTheorem ci
               }
-              go v (path.push (.constDef name)) tsDef s
-            | none   => s
+              go v tsChildDef s
+            | none => s
           else s
-        | none => s
+        else s
+      | none => s
     | .app fn arg =>
-        let s := descend fn .appFn path ts s
-        descend arg .appArg path ts s
+      let s := descend fn .appFn ts s
+      descend arg .appArg ts s
     | .lam _ ty body _ =>
-        let s := descend ty .lamType path ts s
-        descend body .lamBody path ts s
+      let s := descend ty .lamType ts s
+      descend body .lamBody ts s
     | .forallE _ ty body _ =>
-        let s := descend ty .forallType path ts s
-        descend body .forallBody path ts s
+      let s := descend ty .forallType ts s
+      descend body .forallBody ts s
     | .letE _ ty val body _ =>
-        let s := descend ty .letType path ts s
-        let s := descend val .letVal path ts s
-        descend body .letBody path ts s
-    | .mdata _ expr => descend expr .mdata path ts s
-    | .proj _ _ expr => descend expr .proj path ts s
+      let s := descend ty .letType ts s
+      let s := descend val .letVal ts s
+      descend body .letBody ts s
+    | .mdata _ expr => descend expr .mdata ts s
+    | .proj _ _ expr => descend expr .proj ts s
     | .bvar _ | .fvar _ | .mvar _ | .sort _ | .lit _ => s
 
-/-- Run the auditor on a named constant from the environment. -/
-def auditConst (env : Environment) (config : AuditConfig) (name : Name) : AuditResult :=
-  let empty : AuditResult := { entries := #[], visited := {} }
+/-- Run the first audit pass on a named constant. Pure function.
+    Pass a `prior` result to accumulate incrementally (e.g. for bulk audits). -/
+def auditConst (env : Environment) (config : AuditConfig) (name : Name)
+    (prior : AuditResult := {}) : AuditResult :=
   match env.find? name with
   | some ci =>
-    let tsType : TraversalState := { currentConst? := some (name, ci) }
-    let s := auditExpr env config ci.type #[.constType name] tsType empty
+    let tsBase : TraversalState := {
+      currentConst? := some (name, ci)
+      constStack    := #[name]
+      depth         := 1
+    }
+    let s := auditExpr env config ci.type tsBase prior
     match ci.value? with
     | some v =>
-      let tsDef : TraversalState := {
-        currentConst? := some (name, ci)
-        inProofTerm := isTheorem ci
-      }
-      auditExpr env config v #[.constDef name] tsDef s
-    | none   => s
-  | none => empty
+      let tsDef := { tsBase with inProofTerm := isTheorem ci }
+      auditExpr env config v tsDef s
+    | none => s
+  | none => prior
+
+/-- Fill in source locations for all findings. Requires MonadEnv + BaseIO.
+    Call this once after auditConst to populate the location fields. -/
+def resolveLocations (result : AuditResult) : MetaM AuditResult := do
+  let env ← getEnv
+  let findings ← result.findings.foldlM (init := result.findings) fun acc name fi => do
+    if fi.location.module == Name.anonymous then
+      let module := match env.getModuleIdxFor? name with
+        | some idx => env.header.modules[idx.toNat]!.module
+        | none     => env.header.mainModule
+      let range? ← do
+        match ← findDeclarationRanges? name with
+        | some ranges => pure (some ranges.range)
+        | none        => pure none
+      let fi := { fi with location := { module := module, range? := range? } }
+      return acc.insert name fi
+    else
+      return acc
+  return { result with findings := findings }
+
+-- ============================================================================
+-- Second pass: targeted path collection
+-- ============================================================================
+
+/-- Find all ancestors of `target` in the reverse dep graph — constants that
+    transitively reference `target`. Returns the set of ancestor names. -/
+partial def findAncestors (result : AuditResult) (target : Name) : NameHashSet :=
+  go #[target] {}
+where
+  go (queue : Array Name) (seen : NameHashSet) : NameHashSet :=
+    if queue.isEmpty then seen
+    else
+      let (next, rest) := (queue.back!, queue.pop)
+      if seen.contains next then go rest seen
+      else
+        let seen := seen.insert next
+        match result.reverseDeps.find? next with
+        | some parents =>
+          let rest := parents.fold (init := rest) fun acc parent => acc.push parent
+          go rest seen
+        | none => go rest seen
+
+/-- Get the immediate constant-level dependencies of a constant (from its type + value). -/
+def immediateDeps (env : Environment) (name : Name) : NameHashSet :=
+  match env.find? name with
+  | some ci =>
+    let deps : NameHashSet :=
+      ci.type.foldConsts {} fun n (set : NameHashSet) => set.insert n
+    match ci.value? with
+    | some v => v.foldConsts deps fun n (set : NameHashSet) => set.insert n
+    | none   => deps
+  | none => {}
+
+/-- Drill down one level: which direct dependencies of `from_` transitively reach `target`?
+    Pure function — intersects immediate deps with the ancestor set of `target`. -/
+def drillDown (env : Environment) (from_ target : Name) (result : AuditResult)
+    : DrillResult :=
+  let ancestors := findAncestors result target
+  let deps := immediateDeps env from_
+  let relevant := deps.fold (init := ([] : List Name)) fun acc child =>
+    if ancestors.contains child then child :: acc else acc
+  { from_ := from_, target := target, children := relevant }
 
 end MyLeanTermAuditor

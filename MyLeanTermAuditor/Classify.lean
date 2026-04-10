@@ -20,14 +20,29 @@ def getExternSymbol? (env : Environment) (name : Name) : Option String :=
     | _                    => some "<adhoc/opaque extern>"
   | none => none
 
+/-- Classify the kind of an opaque constant. -/
+def classifyOpaqueKind (env : Environment) (info : OpaqueVal) : OpaqueKind :=
+  if Lean.hasInitAttr env info.name
+      || Lean.isIOUnitInitFn env info.name
+      || Lean.isIOUnitBuiltinInitFn env info.name then
+    .initialize_
+  else if info.value.isAppOfArity ``default 2 then
+    -- Body is literally `@default T inst` — a NonemptyType implementation
+    -- or `implemented_by` target. Not a partial def.
+    .implementedBy_
+  else
+    -- Has an actual body (lambdas, lets, etc.) — partial def.
+    .partial_
+
 /-- Classify a constant as interesting or not. Returns `none` if not interesting. -/
 def classifyConst (env : Environment) (ci : ConstantInfo) : Option Finding :=
-  match ci with
-  | .axiomInfo _  => some .axiom_
-  | .opaqueInfo _ => some .opaque_
-  | _ =>
-    match getExternSymbol? env ci.name with
-    | some sym => some (.extern_ sym)
-    | none     => none
+  -- Externs take priority: an extern opaque should be classified as extern, not opaque.
+  match getExternSymbol? env ci.name with
+  | some sym => some (.extern_ sym)
+  | none =>
+    match ci with
+    | .axiomInfo _     => some .axiom_
+    | .opaqueInfo info => some (.opaque_ (classifyOpaqueKind env info))
+    | _                => none
 
 end MyLeanTermAuditor

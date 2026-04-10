@@ -4,10 +4,31 @@ open Lean
 
 namespace MyLeanTermAuditor
 
+/-- Sub-classification of opaque constants.
+    Lean 4 uses `opaque` in the Environment for several distinct purposes. -/
+inductive OpaqueKind where
+  /-- `partial def` — has a Lean body, but the kernel can't unfold it (no termination proof). -/
+  | partial_
+  /-- `initialize` / `builtin_initialize` — value computed at module init time. -/
+  | initialize_
+  /-- `opaque` with a default body — typically a `NonemptyType` implementation
+      or `implemented_by` target. The kernel sees only `@default T inst`. -/
+  | implementedBy_
+  /-- Catch-all for opaques we haven't classified yet. If you hit this, report it. -/
+  | other
+  deriving Repr, BEq, Inhabited
+
+instance : ToString OpaqueKind where
+  toString
+    | .partial_       => "partial"
+    | .initialize_    => "initialize"
+    | .implementedBy_ => "implemented_by"
+    | .other          => "other"
+
 /-- Classification of a constant that we consider "interesting" for audit purposes. -/
 inductive Finding where
   | axiom_    : Finding
-  | opaque_   : Finding
+  | opaque_   (kind : OpaqueKind) : Finding
   | extern_   (sym : String) : Finding
   deriving Repr, BEq, Inhabited
 
@@ -53,22 +74,89 @@ def ExprPath.toString (path : ExprPath) : String :=
 
 instance : ToString ExprPath := ⟨ExprPath.toString⟩
 
-/-- A single audit entry: the constant name, where it lives, and what kind it is. -/
-structure AuditEntry where
-  name        : Name
-  finding     : Finding
-  path        : ExprPath := #[]
-  /-- `true` if this finding was reached through a proof (theorem) term.
-      These are kernel-time dependencies, not runtime dependencies. -/
-  inProofTerm : Bool := false
+/-- Source location of a constant's declaration. -/
+structure SourceLocation where
+  /-- Module (e.g. `Init.Prelude`, `MyLeanTermAuditor.Types`). -/
+  module   : Name
+  /-- Line and column of the declaration, if available. -/
+  range?   : Option DeclarationRange := none
   deriving Repr, Inhabited
 
-/-- The result of an audit: all interesting constants found. -/
-structure AuditResult where
-  entries : Array AuditEntry := #[]
-  /-- All constants we visited (for diagnostics). -/
-  visited : Lean.NameHashSet := {}
+instance : ToString SourceLocation where
+  toString loc :=
+    let rangeStr := match loc.range? with
+      | some r => s!":{r.pos.line}:{r.pos.column}"
+      | none => ""
+    s!"{loc.module}{rangeStr}"
+
+-- ============================================================================
+-- First pass: fast classification (no paths)
+-- ============================================================================
+
+/-- Summary info about a finding constant, collected during the first (fast) pass.
+    No paths stored — just classification, reachability flags, and source location. -/
+structure FindingInfo where
+  /-- The constant's name. -/
+  name              : Name
+  /-- The constant's classification (axiom, opaque, or extern). -/
+  finding           : Finding
+  /-- Where this constant is declared (module + source range). -/
+  location          : SourceLocation
+  /-- Reached through at least one runtime (non-proof) path? -/
+  reachableAtRuntime : Bool := false
+  /-- Reached through at least one proof-term path? -/
+  reachableInProof   : Bool := false
+  /-- How many times this constant was encountered during traversal. -/
+  numEncounters      : Nat := 0
   deriving Inhabited
+
+/-- The result of the first (fast) audit pass.
+    - `findings`: constants with a finding (axiom/opaque/extern), with flags.
+    - `visited`: all constants whose bodies have been traversed (for dedup).
+    - `reverseDeps`: for each constant C, the set of constants whose body/type references C. -/
+structure AuditResult where
+  /-- Constants with findings — classification + reachability flags. -/
+  findings    : NameMap FindingInfo := ∅
+  /-- All constants whose bodies have been traversed (finding or not). -/
+  visited     : Lean.NameHashSet := {}
+  /-- Reverse dependency graph: child → {parents that reference child}. -/
+  reverseDeps : NameMap Lean.NameHashSet := ∅
+  deriving Inhabited
+
+/-- All findings as an array. -/
+def AuditResult.findingsArray (r : AuditResult) : Array FindingInfo :=
+  r.findings.foldl (init := #[]) fun acc _ fi => acc.push fi
+
+/-- Number of constants visited (including non-finding ones). -/
+def AuditResult.numVisited (r : AuditResult) : Nat :=
+  r.visited.size
+
+/-- Number of constants with findings. -/
+def AuditResult.numFindings (r : AuditResult) : Nat :=
+  r.findings.size
+
+-- ============================================================================
+-- Second pass: constant-chain queries (pure DAG traversal)
+-- ============================================================================
+
+/-- Result of a "which children of `from` lead to `target`?" query. -/
+structure DrillResult where
+  /-- The constant we're drilling from. -/
+  from_   : Name
+  /-- The target we're looking for downstream. -/
+  target  : Name
+  /-- Direct dependencies of `from_` that transitively reach `target`. -/
+  children : List Name := []
+  deriving Inhabited
+
+instance : ToString DrillResult where
+  toString dr :=
+    let childStr := ", ".intercalate (dr.children.map Name.toString)
+    s!"{dr.from_} → [{childStr}] → ... → {dr.target}"
+
+-- ============================================================================
+-- Shared types
+-- ============================================================================
 
 /-- Is this constant a theorem? -/
 def isTheorem (ci : ConstantInfo) : Bool :=
@@ -76,23 +164,26 @@ def isTheorem (ci : ConstantInfo) : Bool :=
   | .thmInfo _ => true
   | _          => false
 
-/-- Context available when deciding whether to recurse into or report a constant.
-    Built once per `.const name levels` hit during traversal. -/
+/-- Context available when deciding whether to recurse into or report a constant
+    during the first pass. Lightweight — no ExprPath, just a depth counter and
+    the chain of constants on the current traversal stack. -/
 structure ConstContext where
   env         : Environment
   name        : Name
   ci          : ConstantInfo
-  path        : ExprPath
   levels      : List Level
   finding     : Option Finding
   /-- `true` if we're currently inside a theorem's value (proof territory). -/
   inProofTerm : Bool
+  /-- Number of constant boundaries crossed from the root to here. -/
+  depth       : Nat
+  /-- Chain of constant names on the current traversal stack (most recent last). -/
+  constStack  : Array Name
 
 /-- Context available when deciding whether to descend into a structural
     subexpression (appFn, appArg, lamBody, forallType, etc.). -/
 structure DescendContext where
   step          : ExprStep
-  path          : ExprPath
   /-- The constant whose body we're currently traversing, if any. -/
   currentConst? : Option (Name × ConstantInfo)
   inProofTerm   : Bool
@@ -101,7 +192,11 @@ structure DescendContext where
     Three predicates control traversal at different granularities:
     - `shouldRecurse`: at constant boundaries — enter this constant's type/value?
     - `shouldReport`: at constant boundaries — include this in the output?
-    - `shouldDescend`: at structural positions — recurse into this subexpression? -/
+    - `shouldDescend`: at structural positions — recurse into this subexpression?
+
+    The `drill` and `drillDepth` fields control the second-pass drill-down query.
+    These are ignored by the pure traversal functions and only consumed by the
+    `#audit` command / `AuditM` pipeline. -/
 structure AuditConfig where
   /-- Should we recurse into this constant's definition/type? -/
   shouldRecurse : ConstContext → Bool := fun _ => true
@@ -109,6 +204,9 @@ structure AuditConfig where
   shouldReport  : ConstContext → Bool := fun _ => true
   /-- Should we descend into this structural subexpression? -/
   shouldDescend : DescendContext → Bool := fun _ => true
+  /-- Drill-down targets: for each name, show which direct dependencies of
+      the audited constant(s) transitively reach it. Empty list means no drill. -/
+  drill         : List Name := []
 
 /-- Default config: recurse everywhere, report everything, descend into all subexpressions. -/
 def AuditConfig.default : AuditConfig := {}
