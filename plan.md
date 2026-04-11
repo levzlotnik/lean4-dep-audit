@@ -430,11 +430,17 @@ Named presets via `--config`: `standard` (default), `full`, `runtimeOnly`, `runt
 - `lake build audit` or `lake build` — builds the CLI executable
 - `lake exe audit --help` — usage info
 
-### 2. Record the constant's instantiated type at usage site
+### 2. Record the constant's declared type ✅
 
-When we hit `.const name levels`, record the instantiated type: `ci.type.instantiateLevelParams ci.levelParams levels`. This is pure (no MetaM needed).
+Done. Each `FindingInfo` now stores the constant's declared (polymorphic) type as `type : Expr`, plus a pretty-printed `typeStr : String` populated by `resolveLocations` via `ppExpr`.
 
-Tells us "this extern is being used as `Nat → Nat → Nat`" rather than just "this extern exists."
+Output now shows types inline: `testExternFn [extern "test_c_fn"] [runtime] : Nat → Nat`. This tells you the API surface of each finding without requiring instantiation tracking (which would explode for polymorphic constants like `id` or `Array.size`).
+
+**Design decision:** We store the declared type (`ci.type`), not instantiated types. Collecting all instantiations was rejected because a single polymorphic constant can be instantiated thousands of times (e.g., `id` at every type). The declared type is sufficient — it shows what the extern/axiom/opaque promises.
+
+**Files changed:** `Types.lean` (new fields), `Traverse.lean` (record `ci.type` + pretty-print in `resolveLocations`), `CLI.lean` + `Command.lean` (formatters display type), `Tests/Helpers.lean` (new `assertHasType`/`assertTypeStrContains`), `Tests/TestTypeInfo.lean` (5 new tests).
+
+**Tests:** 34 unit tests pass (29 original + 5 new type-info tests), 17 CLI integration tests pass.
 
 ### 3. (Hard) Record the expected type at the usage site
 

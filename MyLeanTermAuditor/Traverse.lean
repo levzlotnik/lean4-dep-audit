@@ -75,6 +75,7 @@ where
               | none =>
                 let fi : FindingInfo := {
                   name := name, finding := f
+                  type := ci.type
                   location := { module := Name.anonymous }
                   reachableAtRuntime := !ts.inProofTerm
                   reachableInProof   := ts.inProofTerm
@@ -146,15 +147,23 @@ def auditConst (env : Environment) (config : AuditConfig) (name : Name)
 def resolveLocations (result : AuditResult) : MetaM AuditResult := do
   let env ← getEnv
   let findings ← result.findings.foldlM (init := result.findings) fun acc name fi => do
-    if fi.location.module == Name.anonymous then
-      let module := match env.getModuleIdxFor? name with
-        | some idx => env.header.modules[idx.toNat]!.module
-        | none     => env.header.mainModule
-      let range? ← do
-        match ← findDeclarationRanges? name with
-        | some ranges => pure (some ranges.range)
-        | none        => pure none
-      let fi := { fi with location := { module := module, range? := range? } }
+    let needsLocation := fi.location.module == Name.anonymous
+    let needsTypeStr := fi.typeStr.isEmpty
+    if needsLocation || needsTypeStr then
+      let fi ← if needsLocation then do
+        let module := match env.getModuleIdxFor? name with
+          | some idx => env.header.modules[idx.toNat]!.module
+          | none     => env.header.mainModule
+        let range? ← do
+          match ← findDeclarationRanges? name with
+          | some ranges => pure (some ranges.range)
+          | none        => pure none
+        pure { fi with location := { module := module, range? := range? } }
+      else pure fi
+      let fi ← if needsTypeStr then do
+        let fmt ← Meta.ppExpr fi.type
+        pure { fi with typeStr := toString fmt }
+      else pure fi
       return acc.insert name fi
     else
       return acc

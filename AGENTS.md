@@ -2,7 +2,7 @@
 
 ## Developer Commands
 - Build library only: `lake build MyLeanTermAuditor`
-- Run tests (29 tests): `lake build Tests`
+- Run tests (34 tests): `lake build Tests`
 - Run CLI integration tests (17 tests): `lake build audit && lake build test_cli && lake exe test_cli`
 - Build CLI executable: `lake build audit` (or `lake build`, it's the default target)
 - Build demos: `lake build demo`
@@ -11,7 +11,7 @@
 
 ## Verification
 - **Primary**: Check for Lean compiler diagnostics (errors/warnings) via LSP.
-- **Test Suite**: Run `lake build Tests` — 29 `run_cmd` tests across 7 files. Build failure = test failure.
+- **Test Suite**: Run `lake build Tests` — 34 `run_cmd` tests across 8 files. Build failure = test failure.
 - **Logic Testing**: Add `#eval` blocks in `.lean` files (e.g., `Main.lean`) to verify auditor results during elaboration.
 - **Build Check**: Run `lake build MyLeanTermAuditor` for fast iteration (skips Main.lean's expensive `#eval` blocks). Run `lake build` for full verification.
 - **Profiling**: Add `set_option profiler true` before `#eval` blocks to see interpretation vs elaboration time.
@@ -20,7 +20,7 @@
 - **Fixtures** (`TestFixtures/`): Separate `lean_lib` with constants that have specific characteristics (extern, axiom, opaque, pure stdlib, dependency chains). Compiled independently — never rebuilt unless fixtures change.
 - **FFI Fixture** (`test-packages/ffi-fixture/`): Real Lake package with C source compiled via `extern_lib`. The root project depends on it via `require`. Tests import `FfiFixture` and audit constants backed by real linked native code (`libffi.a` with symbols `test_ffi_add`, `test_ffi_toggle`, `test_ffi_const42`).
 - **Tests** (`Tests/`): Import fixtures + `FfiFixture` + `MyLeanTermAuditor`. Each `run_cmd` block calls `auditConst`/`drillDown` directly (pure functions, take `Environment`) and asserts on the `AuditResult`. Assertion failure = build error.
-- **Helpers** (`Tests/Helpers.lean`): `assertHasFinding`, `assertFindingIs`, `assertReachability`, `assertDrillContains`, `assertNumFindings`, `runAudit`, `runAuditMulti`, `runTest` (lifts MetaM → CommandElabM).
+- **Helpers** (`Tests/Helpers.lean`): `assertHasFinding`, `assertFindingIs`, `assertReachability`, `assertDrillContains`, `assertNumFindings`, `assertHasType`, `assertTypeStrContains`, `runAudit`, `runAuditMulti`, `runTest` (lifts MetaM → CommandElabM).
 
 ## Architecture
 
@@ -32,7 +32,7 @@ Read `plan.md` for the full design document. Key points below.
 
 **Pass 2 (`drillDown`):** Pure function `Environment → Name → Name → AuditResult → DrillResult`. Answers "which direct deps of X lead to target Y?" via set intersection on the pre-computed DAG. Instant.
 
-**`resolveLocations`:** `AuditResult → MetaM AuditResult`. Optional post-processing that fills in source locations. The only part that needs MetaM.
+**`resolveLocations`:** `AuditResult → MetaM AuditResult`. Optional post-processing that fills in source locations and pretty-prints declared types. The only part that needs MetaM.
 
 ### Critical Constraints
 

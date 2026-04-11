@@ -219,6 +219,7 @@ structure CLIArgs where
   recurseExpr : Option String := none
   descendExpr : Option String := none
   drill       : Array String := #[]
+  format      : Option String := none
   help        : Bool := false
   deriving Repr
 
@@ -247,6 +248,9 @@ where
     | ("--drill" :: val :: rest), result =>
         go rest { result with drill := result.drill.push val }
     | ("--drill" :: []), _ => .error "--drill requires a value"
+    | ("--format" :: val :: rest), result =>
+        go rest { result with format := some val }
+    | ("--format" :: []), _ => .error "--format requires a value"
     | (arg :: rest), result =>
         if arg.startsWith "--" then .error s!"unknown option '{arg}'"
         else go rest { result with names := result.names.push arg }
@@ -273,44 +277,87 @@ def buildConfig (args : CLIArgs) : Except String AuditConfig := do
   }
 
 -- ============================================================================
--- Output Formatting (plain text)
+-- Output format enum
 -- ============================================================================
 
-def formatFinding (fi : FindingInfo) : String :=
-  let tag := match fi.finding with
-    | .axiom_      => "axiom"
-    | .opaque_ k   => s!"opaque ({k})"
-    | .extern_ sym => s!"extern \"{sym}\""
-  let rt := if fi.reachableAtRuntime then " [runtime]" else ""
-  let kt := if fi.reachableInProof then " [kernel-time]" else ""
-  s!"  {fi.name} [{tag}]{rt}{kt}  ({fi.location})  [{fi.numEncounters} encounters]"
+inductive OutputFormat where
+  | yaml
+  | json
+  deriving BEq
 
-def formatSection (label : String) (findings : Array FindingInfo) : String :=
-  if findings.isEmpty then ""
-  else
-    let header := s!"\n{label} ({findings.size}):"
-    let lines := findings.map fun fi => s!"\n{formatFinding fi}"
-    header ++ String.join lines.toList
+def resolveFormat (s : String) : Except String OutputFormat :=
+  match s with
+  | "yaml" => .ok .yaml
+  | "json" => .ok .json
+  | other  => .error s!"unknown format '{other}' (expected: yaml, json)"
 
-def formatAuditSummary (result : AuditResult) (names : Array Name) : String :=
-  let all := result.findingsArray
-  let axioms  := all.filter fun fi => fi.finding == .axiom_
-  let opaques := all.filter fun fi => match fi.finding with | .opaque_ _ => true | _ => false
-  let externs := all.filter fun fi => match fi.finding with | .extern_ _ => true | _ => false
-  s!"Audited {names.toList} -- visited {result.numVisited} constants, " ++
-  s!"found {all.size} findings " ++
-  s!"({axioms.size} axioms, {opaques.size} opaques, {externs.size} externs)." ++
-  formatSection "Axioms" axioms ++
-  formatSection "Opaques" opaques ++
-  formatSection "Externs" externs
+-- ============================================================================
+-- Shared helpers
+-- ============================================================================
 
-def formatDrill (dr : DrillResult) : String :=
+private def findingKind (fi : FindingInfo) : String :=
+  match fi.finding with
+  | .axiom_      => "axiom"
+  | .opaque_ k   => s!"opaque ({k})"
+  | .extern_ sym => s!"extern \"{sym}\""
+
+private def findingReachability (fi : FindingInfo) : String :=
+  match fi.reachableAtRuntime, fi.reachableInProof with
+  | true, true  => "runtime, kernel"
+  | true, false => "runtime"
+  | false, true => "kernel"
+  | false, false => ""
+
+-- ============================================================================
+-- YAML-like formatter (default)
+-- ============================================================================
+
+private def yamlFinding (fi : FindingInfo) : String :=
+  let typeStr := if fi.typeStr.isEmpty then "unknown" else fi.typeStr
+  s!"  - name: {fi.name}\n" ++
+  s!"    kind: {findingKind fi}\n" ++
+  s!"    type: \"{typeStr}\"\n" ++
+  s!"    reachability: {findingReachability fi}\n" ++
+  s!"    location: \"{fi.location}\"\n" ++
+  s!"    encounters: {fi.numEncounters}"
+
+private def yamlDrill (dr : DrillResult) : String :=
   if dr.children.isEmpty then
-    s!"  {dr.from_} does not reach {dr.target}"
+    s!"  - from: {dr.from_}\n" ++
+    s!"    target: {dr.target}\n" ++
+    s!"    children: []"
   else
-    let lines := dr.children.map fun child => s!"\n    {child}"
-    s!"  {dr.from_} reaches {dr.target} through {dr.children.length} direct dep(s):" ++
-      String.join lines
+    let childLines := dr.children.map fun c => s!"      - {c}"
+    s!"  - from: {dr.from_}\n" ++
+    s!"    target: {dr.target}\n" ++
+    s!"    children:\n" ++
+    "\n".intercalate childLines
+
+def formatYaml (result : AuditResult) (names : Array Name)
+    (drills : Array DrillResult := #[]) : String :=
+  let nameLines := names.toList.map fun n => s!"  - {n}"
+  let out := s!"audited:\n" ++
+    "\n".intercalate nameLines ++ "\n" ++
+    s!"visited: {result.numVisited}\n"
+  let all := result.findingsArray
+  let out := if all.isEmpty then
+    out ++ "findings: []"
+  else
+    let findingLines := all.toList.map yamlFinding
+    out ++ s!"findings:\n" ++ "\n".intercalate findingLines
+  let out := if drills.isEmpty then out
+  else
+    let drillLines := drills.toList.map yamlDrill
+    out ++ s!"\ndrill:\n" ++ "\n".intercalate drillLines
+  out
+
+-- ============================================================================
+-- JSON formatter (compressed, via ToJson instances)
+-- ============================================================================
+
+def formatJson (result : AuditResult) (names : Array Name)
+    (drills : Array DrillResult := #[]) : String :=
+  (toJson (result.serialize names drills)).compress
 
 -- ============================================================================
 -- Help text
@@ -331,6 +378,7 @@ def helpText : String := String.intercalate "\n" [
   "  --recurse <expr>         Filter DSL expression for recursion (overrides config)",
   "  --descend <expr>         Filter DSL expression for descent (overrides config)",
   "  --drill <name>           Drill-down target (repeat for multiple)",
+  "  --format <fmt>           Output format: yaml (default), json",
   "  --help                   Show this help",
   "",
   "Filter DSL:",
@@ -341,7 +389,7 @@ def helpText : String := String.intercalate "\n" [
   "",
   "Examples:",
   "  lake exe audit myMain --import MyModule",
-  "  lake exe audit myMain --import MyModule --config standard",
+  "  lake exe audit myMain --import MyModule --config standard --format json",
   "  lake exe audit myMain --import MyModule --report 'externs & runtime' --descend skipProofs",
   "  lake exe audit myMain --import MyModule --drill propext --drill Quot.sound"]
 
@@ -369,6 +417,13 @@ def run (args : List String) : IO UInt32 := do
     | .error e =>
       IO.eprintln s!"Error: {e}"
       return (1 : UInt32)
+  let fmt ← match cliArgs.format with
+    | some f => match resolveFormat f with
+      | .ok f    => pure f
+      | .error e =>
+        IO.eprintln s!"Error: {e}"
+        return (1 : UInt32)
+    | none => pure OutputFormat.yaml
   -- Initialize Lean environment
   let imports := cliArgs.imports.map fun m =>
     { module := String.toName m : Import }
@@ -398,15 +453,15 @@ def run (args : List String) : IO UInt32 := do
     match eiResult with
     | .ok ((r, _), _) => pure r
     | .error _         => pure result
-  -- Print summary
-  IO.println (formatAuditSummary resolved names)
-  -- Run drill-downs
-  if !config.drill.isEmpty then
-    IO.println "\nDrill-down:"
-    for target in config.drill do
-      for name in names do
-        let dr := drillDown env name target resolved
-        IO.println (formatDrill dr)
+  -- Collect drill-down results
+  let mut drills : Array DrillResult := #[]
+  for target in config.drill do
+    for name in names do
+      drills := drills.push (drillDown env name target resolved)
+  -- Print output
+  match fmt with
+  | .yaml => IO.println (formatYaml resolved names drills)
+  | .json => IO.println (formatJson resolved names drills)
   return 0
 
 end MyLeanTermAuditor.CLI

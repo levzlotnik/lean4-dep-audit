@@ -38,7 +38,8 @@ private def formatFinding (fi : FindingInfo) : MessageData :=
     | .extern_ sym => s!"extern \"{sym}\""
   let rt := if fi.reachableAtRuntime then " [runtime]" else ""
   let kt := if fi.reachableInProof then " [kernel-time]" else ""
-  m!"  {fi.name} [{tag}]{rt}{kt}  ({fi.location})  [{fi.numEncounters} encounters]"
+  let typeStr := if fi.typeStr.isEmpty then "" else s!" : {fi.typeStr}"
+  m!"  {fi.name} [{tag}]{rt}{kt}{typeStr}  ({fi.location})  [{fi.numEncounters} encounters]"
 
 /-- Format a section (e.g. "Axioms") with its findings. -/
 private def formatSection (label : String) (findings : Array FindingInfo) : Array MessageData :=

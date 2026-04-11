@@ -16,7 +16,7 @@ inductive OpaqueKind where
   | implementedBy_
   /-- Catch-all for opaques we haven't classified yet. If you hit this, report it. -/
   | other
-  deriving Repr, BEq, Inhabited
+  deriving Repr, BEq, Inhabited, ToJson, FromJson
 
 instance : ToString OpaqueKind where
   toString
@@ -30,7 +30,7 @@ inductive Finding where
   | axiom_    : Finding
   | opaque_   (kind : OpaqueKind) : Finding
   | extern_   (sym : String) : Finding
-  deriving Repr, BEq, Inhabited
+  deriving Repr, BEq, Inhabited, ToJson, FromJson
 
 /-- A single step in the expression traversal path, recording how we descended
     from the root expression to a finding. -/
@@ -100,6 +100,10 @@ structure FindingInfo where
   name              : Name
   /-- The constant's classification (axiom, opaque, or extern). -/
   finding           : Finding
+  /-- The constant's declared (polymorphic) type — e.g. `Array α → Nat` for `Array.size`. -/
+  type              : Expr := .sort .zero
+  /-- Pretty-printed type string, filled by `resolveLocations`. Empty until then. -/
+  typeStr           : String := ""
   /-- Where this constant is declared (module + source range). -/
   location          : SourceLocation
   /-- Reached through at least one runtime (non-proof) path? -/
@@ -210,5 +214,60 @@ structure AuditConfig where
 
 /-- Default config: recurse everywhere, report everything, descend into all subexpressions. -/
 def AuditConfig.default : AuditConfig := {}
+
+-- ============================================================================
+-- Serializable types for JSON round-tripping
+-- ============================================================================
+
+/-- Serializable version of `FindingInfo`. Replaces `Expr` with its pretty-printed
+    string and `SourceLocation` with its string representation. -/
+structure FindingInfoSer where
+  name              : Name
+  finding           : Finding
+  type              : String
+  location          : String
+  reachableAtRuntime : Bool
+  reachableInProof   : Bool
+  numEncounters      : Nat
+  deriving ToJson, FromJson
+
+/-- Serializable version of `DrillResult`. -/
+structure DrillResultSer where
+  from_    : Name
+  target   : Name
+  children : Array Name
+  deriving ToJson, FromJson
+
+/-- Serializable version of the full audit output. -/
+structure AuditResultSer where
+  audited  : Array Name
+  visited  : Nat
+  findings : Array FindingInfoSer
+  drill    : Array DrillResultSer
+  deriving ToJson, FromJson
+
+def FindingInfo.serialize (fi : FindingInfo) : FindingInfoSer := {
+  name              := fi.name
+  finding           := fi.finding
+  type              := if fi.typeStr.isEmpty then "unknown" else fi.typeStr
+  location          := toString fi.location
+  reachableAtRuntime := fi.reachableAtRuntime
+  reachableInProof   := fi.reachableInProof
+  numEncounters      := fi.numEncounters
+}
+
+def DrillResult.serialize (dr : DrillResult) : DrillResultSer := {
+  from_    := dr.from_
+  target   := dr.target
+  children := dr.children.toArray
+}
+
+def AuditResult.serialize (result : AuditResult) (names : Array Name)
+    (drills : Array DrillResult := #[]) : AuditResultSer := {
+  audited  := names
+  visited  := result.numVisited
+  findings := result.findingsArray.map FindingInfo.serialize
+  drill    := drills.map DrillResult.serialize
+}
 
 end MyLeanTermAuditor
