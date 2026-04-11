@@ -309,6 +309,73 @@ Both are real dependencies with real trust assumptions — they just answer diff
 
 ---
 
+## How Custom FFI Works in Lean 4
+
+Understanding the linking story is essential for extern symbol tracing. There are three ways developers bring custom native code into Lean projects:
+
+### Approach 1: `extern_lib` target (build C from source)
+
+The standard pattern. Requires `lakefile.lean` (TOML can't express this):
+
+```lean
+target ffi.o pkg : System.FilePath := do
+  let oFile := pkg.buildDir / "ffi.o"
+  let srcJob ← inputTextFile <| pkg.dir / "c" / "ffi.c"
+  let flags := #["-I", (← getLeanIncludeDir).toString, "-fPIC"]
+  buildO oFile srcJob flags #[] "cc"
+
+extern_lib libffi pkg := do
+  let name := nameToStaticLib "ffi"
+  let ffiO ← fetch <| pkg.target ``ffi.o
+  buildStaticLib (pkg.staticLibDir / name) #[ffiO]
+```
+
+The C file `#include <lean/lean.h>` and exports functions matching the `@[extern "symbol_name"]` strings. Lake compiles `.c` → `.o` → `.a`, and links the archive into executables.
+
+**Discoverable:** The `.a` file ends up in `.lake/build/lib/`. We can `nm` it to find which symbols it provides.
+
+### Approach 2: `moreLinkArgs` (link system library)
+
+For already-installed system libraries:
+
+```lean
+package myProject where
+  moreLinkArgs := #["-lglfw", "-L/usr/local/lib", "-lmylib"]
+```
+
+**Discoverable:** The `-l` and `-L` flags are in the lakefile. We can search those paths with `nm`.
+
+### Approach 3: Alloy (inline C in .lean files)
+
+The Alloy library embeds C directly in `.lean` files:
+
+```lean
+alloy c extern def myAdd (x y : UInt32) : UInt32 := { return x + y; }
+```
+
+Generates symbols with `_alloy_c_l_` prefix. The C code lives in the `.lean` file itself.
+
+### Three categories of extern symbols in a linked executable
+
+| Category | Where it lives | Example |
+|----------|---------------|---------|
+| **Header-only** (`static inline` in `lean.h`) | Inlined at compile time, no `.so` symbol | `lean_nat_add`, `lean_array_get_size` |
+| **Runtime library** (in `libleanrt.a` / `libleanshared.so`) | Toolchain `lib/lean/` directory | `lean_string_append`, `lean_get_stdin` |
+| **User/project library** (in `.lake/build/lib/*.a`) | Project build directory | `test_ffi_add` (from extern_lib) |
+
+### What's available at elaboration time
+
+- `getExternAttrData? env name` → the symbol name string (already used by `Classify.lean`)
+- `searchPathRef.get` → search path directories (needs `IO`)
+- `env.getModuleIdxFor? name` → which module a constant is from (determines stdlib vs user)
+
+What's NOT available without shelling out:
+- Which specific library file provides a given symbol
+- Whether a symbol is header-only or a real linked symbol
+- Lake build configuration (`moreLinkArgs`, `extern_lib` targets)
+
+---
+
 ## Next Steps
 
 ### 1. CLI executable (`lake exe audit`)
@@ -332,12 +399,80 @@ Tells us "this extern is being used as `Nat → Nat → Nat`" rather than just "
 
 What does the surrounding context expect at that position? This requires a third pass using `MetaM` + `withLocalDecl` + `inferType`, targeted at specific constants from the drill-down (not a full re-traversal).
 
-### 4. Extern symbol tracing (stretch)
+### 4. Extern symbol tracing + package-level test infrastructure
 
-For each extern symbol found, trace it back to the linked native library:
-- Parse `lakefile.toml` for `moreLinkArgs`
-- Find the `.a`/`.so` containing the symbol via `nm`/`objdump`
-- Optionally find C source in the workspace
+Trace each `@[extern]` symbol back to its native implementation. This is the auditor's core value proposition for real projects — answering "what C code does my binary actually link?"
+
+#### 4a. Convert to `lakefile.lean`
+
+The main project must switch from `lakefile.toml` to `lakefile.lean`. TOML can't express `extern_lib` targets or `require` local path dependencies. The Lean lakefile is required to depend on sub-packages that have native code.
+
+#### 4b. Package-level test fixtures
+
+Create real Lake packages as test fixtures under `test-packages/`:
+
+```
+test-packages/
+  ffi-fixture/
+    lakefile.lean          -- extern_lib target, compiles C source
+    lean-toolchain         -- same version as root (symlink or copy)
+    FfiFixture/
+      Basic.lean           -- @[extern "test_ffi_add"] opaque testFfiAdd : UInt32 → UInt32 → UInt32
+    FfiFixture.lean        -- root import
+    c/
+      ffi.c                -- #include <lean/lean.h>
+                           -- LEAN_EXPORT uint32_t test_ffi_add(uint32_t a, uint32_t b) { return a+b; }
+```
+
+The main project's `lakefile.lean` declares `require FfiFixture from ./ "test-packages" / "ffi-fixture"`. Test files import from `FfiFixture` and audit its constants — now the auditor operates on constants backed by real linked native code.
+
+**What this exercises:**
+- Constants where the extern symbol resolves to a user-compiled `.a` in `.lake/build/`
+- The `extern_lib` target build chain: `.c` → `.o` → `.a` → linked
+- Distinction between user extern symbols (in the fixture package) and stdlib symbols (in the toolchain)
+- `precompileModules` for interpreter-time resolution (if we want `#eval` to work)
+
+**Additional fixture packages to consider:**
+- A package using `moreLinkArgs` to link a system library (e.g., `-lm` for `sin`/`cos`)
+- A package using the Alloy approach (inline C in `.lean` files) if we want to detect that pattern
+
+#### 4c. Symbol provenance resolution
+
+Enrich `FindingInfo` with a `SymbolProvenance` type:
+
+```lean
+inductive SymbolProvenance where
+  | toolchainRuntime   (lib : FilePath)    -- found in libleanrt.a or libleanshared.so
+  | toolchainHeader                         -- static inline in lean.h (no .so symbol)
+  | toolchainModule    (lib : FilePath)    -- found in libInit.a / libStd.a / libLean.a
+  | projectLib         (lib : FilePath)    -- found in .lake/build/lib/*.a (extern_lib)
+  | systemLib          (flag : String)     -- from moreLinkArgs -l flag
+  | unresolved                              -- symbol not found in any searched location
+```
+
+Resolution strategy:
+1. Get the extern symbol name from `ExternAttrData` (already done by `Classify.lean`)
+2. Get the search path directories from `searchPathRef` (needs `IO`)
+3. For each `.a`/`.so` in the search path, run `nm` to check if the symbol is defined
+4. For header-only symbols, parse `lean.h` for `static inline` declarations containing the symbol name
+5. Classify the provenance based on which library matched
+
+This requires `IO` (shelling out to `nm`, reading `lean.h`), so it's a post-processing step like `resolveLocations` — not part of the pure first pass.
+
+#### 4d. Lakefile parsing (for user projects)
+
+For `moreLinkArgs`-style linking, we need to read the project's lakefile to discover `-l` and `-L` flags. Options:
+- Parse `lakefile.toml` directly (structured, easy)
+- For `lakefile.lean`, extract `moreLinkArgs` from the Lake environment (harder — Lake's internal data model)
+- Or just scan the built `.lake/build/` directory for `.a`/`.so` files that aren't from the toolchain
+
+#### 4e. Tests for symbol tracing
+
+Add tests to `Tests/` that:
+- Audit an FFI fixture constant and verify its extern symbol resolves to the fixture's `.a` file
+- Audit a stdlib extern and verify it resolves to the toolchain runtime
+- Audit a user `@[extern]` with no backing native code and verify it's classified as `unresolved`
+- Test the provenance classification for each category
 
 ### 5. Admissibility proof (stretch)
 
