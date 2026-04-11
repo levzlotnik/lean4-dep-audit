@@ -167,24 +167,32 @@ Five demos on `myMain : IO Unit` (reads stdin, prints greeting):
 4. **Drill-down:** "Why does myMain depend on propext?" → IO.println, String.Slice.instToString, instAppendString, String.trimAscii
 5. **Multiple constants:** `(myMain, main)` — shared AuditResult, 25 visited, 0 findings
 
-### Test Suite (22 tests, all passing)
+### Test Suite (29 tests, all passing)
 
 Fixtures in `TestFixtures/` (separate `lean_lib`, compiled independently), tests in `Tests/` that import fixtures + auditor. `lake build Tests` = run all tests. Assertion failure = build error.
 
-**Fixture files:**
+**Fixture files (in-project):**
 - `TestFixtures/Extern.lean` — `@[extern "test_c_fn"]` binding, caller, dual-extern caller
 - `TestFixtures/Axiom.lean` — custom `axiom`, `sorry`-based theorem, transitive sorry usage
 - `TestFixtures/Opaque.lean` — `partial def`, plain `opaque`, callers for each
 - `TestFixtures/PureStdlib.lean` — pure arithmetic, pure IO, list processing (all stdlib-only)
 - `TestFixtures/Chain.lean` — known dependency chain with extern leaf for drill-down queries
 
-**Test files (22 `run_cmd` blocks):**
-- `Tests/TestExtern.lean` (5 tests) — extern classification, transitive detection, dual externs, standard config, reachability flags
+**Package-level fixture (`test-packages/ffi-fixture/`):**
+- A real Lake package with C source compiled via `extern_lib`. The root project depends on it via `require FfiFixture from "test-packages" / "ffi-fixture"`.
+- `c/ffi.c` — C implementations: `test_ffi_add` (UInt32 addition), `test_ffi_toggle` (Bool negation), `test_ffi_const42` (thunk returning 42)
+- `FfiFixture/Basic.lean` — `@[extern]` opaque declarations matching the C symbols, plus pure Lean callers (`callsFfiAdd`, `callsBothFfi`, `ffiChainRoot`)
+- `lakefile.lean` — `extern_lib` target compiling `c/ffi.c` → `libffi.a`, with `precompileModules := true`
+- Build produces `libffi.a` with verified symbols (`nm` confirms `test_ffi_add`, `test_ffi_toggle`, `test_ffi_const42`)
+
+**Test files (29 `run_cmd` blocks):**
+- `Tests/TestExtern.lean` (4 tests) — extern classification, transitive detection, dual externs, standard config, reachability flags
 - `Tests/TestAxiom.lean` (4 tests) — axiom classification, transitive detection, standard config, sorry → `sorryAx` (classified as `extern_ "lean_sorry"` since `@[extern]` takes priority)
 - `Tests/TestOpaque.lean` (3 tests) — partial def, implementedBy classification, standard config
 - `Tests/TestPureStdlib.lean` (4 tests) — 0 findings for pure code under standard config, >0 findings under default config (validates filtering isn't trivially empty)
 - `Tests/TestDrillDown.lean` (4 tests) — single-path drill, multi-path drill, non-existent target, extern finding detection
 - `Tests/TestMulti.lean` (3 tests) — shared visited dedup, disjoint trees, combined visit count ≥ individual
+- `Tests/TestFfi.lean` (7 tests) — **real linked FFI**: extern classification with correct symbol names, transitive detection through callers, multi-extern detection, drill-down through FFI dependency chains, standard config flags non-standard FFI externs, runtime reachability, thunk-pattern extern
 
 **Test infrastructure:**
 - `Tests/Helpers.lean` — assertion helpers (`assertHasFinding`, `assertFindingIs`, `assertReachability`, `assertDrillContains`, etc.), `runAudit`/`runAuditMulti` wrappers, `runTest` lifts `MetaM` into `CommandElabM`
@@ -195,7 +203,7 @@ Fixtures in `TestFixtures/` (separate `lean_lib`, compiled independently), tests
 
 ```
 MyLeanTermAuditor/
-  lakefile.toml
+  lakefile.lean               # Lake build config (converted from TOML for extern_lib support)
   lean-toolchain              # leanprover/lean4:v4.29.0
   flake.nix                   # nix dev shell with elan
   .envrc                      # direnv: `use flake`
@@ -212,9 +220,18 @@ MyLeanTermAuditor/
     Command.lean              # #audit command elaborator
     StackTrace.lean           # StackFrame, toFrames, toStackTrace, DrillResult.toTraceString
     Filter.lean               # Filter/Descend combinators, standard library detection, convenience configs
-  TestFixtures.lean           # root import for test fixtures
+  test-packages/
+    ffi-fixture/              # Real Lake package with C FFI (required dependency)
+      lakefile.lean           # extern_lib target, compiles c/ffi.c → libffi.a
+      lean-toolchain          # same version as root
+      FfiFixture.lean         # root import
+      FfiFixture/
+        Basic.lean            # @[extern] bindings (ffiAdd, ffiToggle, ffiConst42) + callers
+      c/
+        ffi.c                 # C implementations (test_ffi_add, test_ffi_toggle, test_ffi_const42)
+  TestFixtures.lean           # root import for in-project test fixtures
   TestFixtures/
-    Extern.lean               # @[extern] bindings
+    Extern.lean               # @[extern] bindings (no backing C — unlinked opaques)
     Axiom.lean                # custom axiom, sorry
     Opaque.lean               # partial def, plain opaque
     PureStdlib.lean           # stdlib-only code
@@ -222,18 +239,19 @@ MyLeanTermAuditor/
   Tests.lean                  # root import for tests
   Tests/
     Helpers.lean              # assertion helpers, runTest, runAudit wrappers
-    TestExtern.lean           # extern tests (5)
+    TestExtern.lean           # extern tests (4)
     TestAxiom.lean            # axiom tests (4)
     TestOpaque.lean           # opaque tests (3)
     TestPureStdlib.lean       # pure stdlib tests (4)
     TestDrillDown.lean        # drill-down tests (4)
     TestMulti.lean            # multi-constant tests (3)
+    TestFfi.lean              # FFI tests (7) — real linked native code
   Main.lean                   # demos: standard, runtime externs, full, drill, multi-constant
 ```
 
 Dependency chain: `Types ← Classify ← Traverse ← Monad ← Command`, `Types ← StackTrace ← Filter`.
 
-Build targets: `lake build MyLeanTermAuditor` (library), `lake build Tests` (run tests), `lake build` (everything including Main.lean demos).
+Build targets: `lake build MyLeanTermAuditor` (library), `lake build Tests` (run 29 tests), `lake build` (everything including Main.lean demos).
 
 ---
 
@@ -403,34 +421,25 @@ What does the surrounding context expect at that position? This requires a third
 
 Trace each `@[extern]` symbol back to its native implementation. This is the auditor's core value proposition for real projects — answering "what C code does my binary actually link?"
 
-#### 4a. Convert to `lakefile.lean`
+#### 4a. Convert to `lakefile.lean` ✅
 
-The main project must switch from `lakefile.toml` to `lakefile.lean`. TOML can't express `extern_lib` targets or `require` local path dependencies. The Lean lakefile is required to depend on sub-packages that have native code.
+Done. The main project switched from `lakefile.toml` to `lakefile.lean` to support `extern_lib` targets and `require` local path dependencies.
 
-#### 4b. Package-level test fixtures
+#### 4b. Package-level test fixtures ✅
 
-Create real Lake packages as test fixtures under `test-packages/`:
+Done. Created `test-packages/ffi-fixture/` — a real Lake package with:
+- `c/ffi.c` — three C functions: `test_ffi_add` (UInt32 addition), `test_ffi_toggle` (Bool negation), `test_ffi_const42` (thunk returning 42)
+- `FfiFixture/Basic.lean` — `@[extern]` opaque declarations + pure Lean callers (`callsFfiAdd`, `callsBothFfi`, `ffiChainRoot`)
+- `lakefile.lean` — `extern_lib` target: `c/ffi.c` → `ffi.o` → `libffi.a`, with `precompileModules := true`
+- `Tests/TestFfi.lean` — 7 tests: extern classification with correct symbols, transitive detection, multi-extern, drill-down through FFI chains, standard config, reachability flags, thunk pattern
 
-```
-test-packages/
-  ffi-fixture/
-    lakefile.lean          -- extern_lib target, compiles C source
-    lean-toolchain         -- same version as root (symlink or copy)
-    FfiFixture/
-      Basic.lean           -- @[extern "test_ffi_add"] opaque testFfiAdd : UInt32 → UInt32 → UInt32
-    FfiFixture.lean        -- root import
-    c/
-      ffi.c                -- #include <lean/lean.h>
-                           -- LEAN_EXPORT uint32_t test_ffi_add(uint32_t a, uint32_t b) { return a+b; }
-```
-
-The main project's `lakefile.lean` declares `require FfiFixture from ./ "test-packages" / "ffi-fixture"`. Test files import from `FfiFixture` and audit its constants — now the auditor operates on constants backed by real linked native code.
+The root project's `lakefile.lean` declares `require FfiFixture from "test-packages" / "ffi-fixture"`. Build produces `libffi.a` with verified symbols (`nm` confirms all three). All 29 tests pass (22 original + 7 FFI).
 
 **What this exercises:**
 - Constants where the extern symbol resolves to a user-compiled `.a` in `.lake/build/`
 - The `extern_lib` target build chain: `.c` → `.o` → `.a` → linked
 - Distinction between user extern symbols (in the fixture package) and stdlib symbols (in the toolchain)
-- `precompileModules` for interpreter-time resolution (if we want `#eval` to work)
+- `precompileModules` for interpreter-time resolution
 
 **Additional fixture packages to consider:**
 - A package using `moreLinkArgs` to link a system library (e.g., `-lm` for `sin`/`cos`)
@@ -489,9 +498,12 @@ The traversal is `partial` because it follows `.const` references into the `Envi
 - **`MyLeanTermAuditor/Command.lean`** — `#audit` command elaborator
 - **`MyLeanTermAuditor/Filter.lean`** — composable filter/descent predicates, stdlib detection, convenience configs
 - **`MyLeanTermAuditor/StackTrace.lean`** — compile-time stack trace rendering
-- **`TestFixtures/`** — test fixture constants (Extern, Axiom, Opaque, PureStdlib, Chain)
+- **`test-packages/ffi-fixture/`** — real Lake package with C FFI (extern_lib, libffi.a)
+- **`test-packages/ffi-fixture/c/ffi.c`** — C implementations for test extern symbols
+- **`test-packages/ffi-fixture/FfiFixture/Basic.lean`** — @[extern] bindings + callers
+- **`TestFixtures/`** — in-project test fixture constants (Extern, Axiom, Opaque, PureStdlib, Chain)
 - **`Tests/Helpers.lean`** — assertion helpers, `runTest`, `runAudit` wrappers
-- **`Tests/Test*.lean`** — 22 tests across 6 test files
+- **`Tests/Test*.lean`** — 29 tests across 7 test files (including TestFfi.lean for real FFI)
 - **`Main.lean`** — five demos: standard, runtime externs, full, drill, multi-constant
 - **`opencode.json`** — MCP server config (lean-lsp-mcp)
 - **`.opencode/skills/lean4/SKILL.md`** — lean4 skill (loaded via `skill` tool)
