@@ -13,6 +13,15 @@ lean_lib TestFixtures
 lean_lib Tests where
   globs := #[.submodules `Tests]
 
+/-- Demos: #audit command examples. Build with `lake build demo`. -/
+lean_exe demo where
+  root := `Demo
+
+/-- CLI: `lake exe audit <const> --import <module> [--config standard|full|...]` -/
 @[default_target]
-lean_exe myleantermauditor where
+lean_exe audit where
   root := `Main
+
+/-- CLI integration tests. Run with `lake build test_cli && lake exe test_cli`. -/
+lean_exe test_cli where
+  root := `TestCLI

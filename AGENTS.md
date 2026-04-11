@@ -3,8 +3,11 @@
 ## Developer Commands
 - Build library only: `lake build MyLeanTermAuditor`
 - Run tests (29 tests): `lake build Tests`
-- Build everything (including Main.lean demos): `lake build`
-- Run executable: `lake exe myleantermauditor` (placeholder — real output is from `#eval` at elaboration time)
+- Run CLI integration tests (17 tests): `lake build audit && lake build test_cli && lake exe test_cli`
+- Build CLI executable: `lake build audit` (or `lake build`, it's the default target)
+- Build demos: `lake build demo`
+- Run CLI: `lake exe audit <constant> --import <module> [--config standard|full|...] [--report <dsl>] [--drill <name>]`
+- CLI help: `lake exe audit --help`
 
 ## Verification
 - **Primary**: Check for Lean compiler diagnostics (errors/warnings) via LSP.

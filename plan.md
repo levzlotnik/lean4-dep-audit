@@ -220,6 +220,7 @@ MyLeanTermAuditor/
     Command.lean              # #audit command elaborator
     StackTrace.lean           # StackFrame, toFrames, toStackTrace, DrillResult.toTraceString
     Filter.lean               # Filter/Descend combinators, standard library detection, convenience configs
+    CLI.lean                  # CLI: filter DSL parser, arg parser, formatters, run entry point
   test-packages/
     ffi-fixture/              # Real Lake package with C FFI (required dependency)
       lakefile.lean           # extern_lib target, compiles c/ffi.c → libffi.a
@@ -246,12 +247,13 @@ MyLeanTermAuditor/
     TestDrillDown.lean        # drill-down tests (4)
     TestMulti.lean            # multi-constant tests (3)
     TestFfi.lean              # FFI tests (7) — real linked native code
-  Main.lean                   # demos: standard, runtime externs, full, drill, multi-constant
+  Main.lean                   # CLI entry point (thin wrapper for CLI.run)
+  Demo.lean                   # demos: standard, runtime externs, full, drill, multi-constant
 ```
 
-Dependency chain: `Types ← Classify ← Traverse ← Monad ← Command`, `Types ← StackTrace ← Filter`.
+Dependency chain: `Types ← Classify ← Traverse ← Monad ← Command`, `Types ← StackTrace ← Filter`, `Filter + Traverse + Monad ← CLI`.
 
-Build targets: `lake build MyLeanTermAuditor` (library), `lake build Tests` (run 29 tests), `lake build` (everything including Main.lean demos).
+Build targets: `lake build MyLeanTermAuditor` (library), `lake build Tests` (run 29 tests), `lake build audit` or `lake build` (CLI executable), `lake build demo` (elaboration-time demos).
 
 ---
 
@@ -396,16 +398,37 @@ What's NOT available without shelling out:
 
 ## Next Steps
 
-### 1. CLI executable (`lake exe audit`)
+### 1. CLI executable (`lake exe audit`) ✅
 
-Build a compiled executable for bulk/CI audits:
+Done. Fully compiled native executable. Loads `.olean` files via `importModules`, runs `auditConst` natively. Usage:
+
 ```bash
-lake exe audit myMain
-lake exe audit myMain --config runtimeExterns
-lake exe audit --module MyModule    # all public defs in a module
+lake exe audit myMain --import MyModule                     # standard config (default)
+lake exe audit myMain --import MyModule --config full       # all findings
+lake exe audit myMain --import MyModule --config runtimeExterns
+lake exe audit myMain otherConst --import MyModule          # multiple constants
+lake exe audit myMain --import MyModule --drill propext     # drill-down
+lake exe audit myMain --import MyModule --report 'externs & !stdlib' --descend skipProofs
 ```
 
-Fully compiled — no interpreter overhead. Loads `.olean` files, runs `auditConst` natively. The main performance path.
+**Filter DSL** — a mini-expression language for composing filter predicates from the command line:
+- Report atoms: `axioms`, `opaques`, `partials`, `externs`, `initialize`, `runtime`, `kernel`, `stdlib`, `hasFinding`, `nonStdAxioms`, `nonStdExterns`, `nonStdOpaques`
+- Descend atoms: `skipProofs`, `skipTypes`, `all`
+- Operators: `&` (and), `|` (or), `!` (not), `()` (grouping)
+- Examples: `'externs & runtime'`, `'nonStdAxioms | nonStdExterns & !stdlib'`, `'!(axioms | opaques)'`
+
+Hand-rolled recursive descent parser (~160 lines). Produces compiled `ConstContext → Bool` / `DescendContext → Bool` closures at startup — no interpreter overhead at audit time.
+
+Named presets via `--config`: `standard` (default), `full`, `runtimeOnly`, `runtimeExterns`, `axiomsOnly`. Individual `--report`/`--recurse`/`--descend` flags override the preset's corresponding predicate.
+
+**Files:**
+- `MyLeanTermAuditor/CLI.lean` — tokenizer, recursive descent parser, arg parser, formatters, `run` entry point
+- `Main.lean` — thin wrapper: `def main := CLI.run`
+- `Demo.lean` — former `Main.lean` demos (now a separate `lake exe demo` target)
+
+**Build targets:**
+- `lake build audit` or `lake build` — builds the CLI executable
+- `lake exe audit --help` — usage info
 
 ### 2. Record the constant's instantiated type at usage site
 
@@ -497,6 +520,7 @@ The traversal is `partial` because it follows `.const` references into the `Envi
 - **`MyLeanTermAuditor/Monad.lean`** — AuditM monad, monadic wrappers
 - **`MyLeanTermAuditor/Command.lean`** — `#audit` command elaborator
 - **`MyLeanTermAuditor/Filter.lean`** — composable filter/descent predicates, stdlib detection, convenience configs
+- **`MyLeanTermAuditor/CLI.lean`** — CLI: filter DSL parser, arg parser, formatters, `run` entry point
 - **`MyLeanTermAuditor/StackTrace.lean`** — compile-time stack trace rendering
 - **`test-packages/ffi-fixture/`** — real Lake package with C FFI (extern_lib, libffi.a)
 - **`test-packages/ffi-fixture/c/ffi.c`** — C implementations for test extern symbols
@@ -504,7 +528,8 @@ The traversal is `partial` because it follows `.const` references into the `Envi
 - **`TestFixtures/`** — in-project test fixture constants (Extern, Axiom, Opaque, PureStdlib, Chain)
 - **`Tests/Helpers.lean`** — assertion helpers, `runTest`, `runAudit` wrappers
 - **`Tests/Test*.lean`** — 29 tests across 7 test files (including TestFfi.lean for real FFI)
-- **`Main.lean`** — five demos: standard, runtime externs, full, drill, multi-constant
+- **`Main.lean`** — CLI entry point (`def main := CLI.run`)
+- **`Demo.lean`** — five demos: standard, runtime externs, full, drill, multi-constant
 - **`opencode.json`** — MCP server config (lean-lsp-mcp)
 - **`.opencode/skills/lean4/SKILL.md`** — lean4 skill (loaded via `skill` tool)
 
