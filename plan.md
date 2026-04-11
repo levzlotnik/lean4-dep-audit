@@ -167,6 +167,30 @@ Five demos on `myMain : IO Unit` (reads stdin, prints greeting):
 4. **Drill-down:** "Why does myMain depend on propext?" → IO.println, String.Slice.instToString, instAppendString, String.trimAscii
 5. **Multiple constants:** `(myMain, main)` — shared AuditResult, 25 visited, 0 findings
 
+### Test Suite (22 tests, all passing)
+
+Fixtures in `TestFixtures/` (separate `lean_lib`, compiled independently), tests in `Tests/` that import fixtures + auditor. `lake build Tests` = run all tests. Assertion failure = build error.
+
+**Fixture files:**
+- `TestFixtures/Extern.lean` — `@[extern "test_c_fn"]` binding, caller, dual-extern caller
+- `TestFixtures/Axiom.lean` — custom `axiom`, `sorry`-based theorem, transitive sorry usage
+- `TestFixtures/Opaque.lean` — `partial def`, plain `opaque`, callers for each
+- `TestFixtures/PureStdlib.lean` — pure arithmetic, pure IO, list processing (all stdlib-only)
+- `TestFixtures/Chain.lean` — known dependency chain with extern leaf for drill-down queries
+
+**Test files (22 `run_cmd` blocks):**
+- `Tests/TestExtern.lean` (5 tests) — extern classification, transitive detection, dual externs, standard config, reachability flags
+- `Tests/TestAxiom.lean` (4 tests) — axiom classification, transitive detection, standard config, sorry → `sorryAx` (classified as `extern_ "lean_sorry"` since `@[extern]` takes priority)
+- `Tests/TestOpaque.lean` (3 tests) — partial def, implementedBy classification, standard config
+- `Tests/TestPureStdlib.lean` (4 tests) — 0 findings for pure code under standard config, >0 findings under default config (validates filtering isn't trivially empty)
+- `Tests/TestDrillDown.lean` (4 tests) — single-path drill, multi-path drill, non-existent target, extern finding detection
+- `Tests/TestMulti.lean` (3 tests) — shared visited dedup, disjoint trees, combined visit count ≥ individual
+
+**Test infrastructure:**
+- `Tests/Helpers.lean` — assertion helpers (`assertHasFinding`, `assertFindingIs`, `assertReachability`, `assertDrillContains`, etc.), `runAudit`/`runAuditMulti` wrappers, `runTest` lifts `MetaM` into `CommandElabM`
+
+**Key finding:** `sorryAx` is classified as `extern_ "lean_sorry"` (not `axiom_`) because `sorryAx` has `@[extern "lean_sorry"]` in the Lean runtime, and the auditor's classification correctly gives extern priority over axiom.
+
 ### Project Structure
 
 ```
@@ -188,10 +212,28 @@ MyLeanTermAuditor/
     Command.lean              # #audit command elaborator
     StackTrace.lean           # StackFrame, toFrames, toStackTrace, DrillResult.toTraceString
     Filter.lean               # Filter/Descend combinators, standard library detection, convenience configs
+  TestFixtures.lean           # root import for test fixtures
+  TestFixtures/
+    Extern.lean               # @[extern] bindings
+    Axiom.lean                # custom axiom, sorry
+    Opaque.lean               # partial def, plain opaque
+    PureStdlib.lean           # stdlib-only code
+    Chain.lean                # known dependency chain for drill-down
+  Tests.lean                  # root import for tests
+  Tests/
+    Helpers.lean              # assertion helpers, runTest, runAudit wrappers
+    TestExtern.lean           # extern tests (5)
+    TestAxiom.lean            # axiom tests (4)
+    TestOpaque.lean           # opaque tests (3)
+    TestPureStdlib.lean       # pure stdlib tests (4)
+    TestDrillDown.lean        # drill-down tests (4)
+    TestMulti.lean            # multi-constant tests (3)
   Main.lean                   # demos: standard, runtime externs, full, drill, multi-constant
 ```
 
 Dependency chain: `Types ← Classify ← Traverse ← Monad ← Command`, `Types ← StackTrace ← Filter`.
+
+Build targets: `lake build MyLeanTermAuditor` (library), `lake build Tests` (run tests), `lake build` (everything including Main.lean demos).
 
 ---
 
@@ -269,37 +311,7 @@ Both are real dependencies with real trust assumptions — they just answer diff
 
 ## Next Steps
 
-### 1. Test suite (`tests/` directory)
-
-Create a `tests/` directory with Lean files that exercise different audit scenarios. Each test file defines constants with specific characteristics, and Main.lean (or a test runner) audits them and verifies expected results.
-
-**Test cases to cover:**
-
-- **Custom `@[extern]` binding**: define a function with `@[extern "my_c_fn"]` — should appear in standard config
-- **Custom `axiom`**: declare `axiom myAxiom : ...` — should appear as non-standard axiom
-- **`sorry`-based proofs**: use `sorry` in a proof — should appear (sorry is an axiom)
-- **`partial def`**: define a `partial def` — should appear as `opaque (partial)` with full config
-- **`initialize` ref**: use `initialize` to create a ref — should appear as `opaque (initialize)` with full config
-- **`implemented_by`**: opaque + `@[implemented_by]` — should appear as `opaque (implemented_by)` with full config
-- **Mixed runtime + kernel-time**: constant used in both runtime code and proof terms
-- **Pure stdlib user**: code that only uses Init/Std — standard config should report 0 findings
-- **Drill-down**: known dependency chain, verify drill output matches expected children
-- **Multi-constant audit**: shared `AuditResult` accumulator correctly deduplicates
-- **Custom `AuditConfig`**: user-defined config with custom predicates works via `with`
-
-**Structure:**
-```
-tests/
-  TestExtern.lean        # @[extern] bindings
-  TestAxiom.lean         # custom axioms, sorry
-  TestOpaque.lean        # partial def, initialize, implemented_by
-  TestMixed.lean         # mixed runtime/kernel-time
-  TestPureStdlib.lean    # stdlib-only code (expect 0 findings)
-```
-
-Main.lean or a test harness imports these and runs `#audit` on each, verifying output. This validates the standard config's filtering logic and all finding classifications.
-
-### 2. CLI executable (`lake exe audit`)
+### 1. CLI executable (`lake exe audit`)
 
 Build a compiled executable for bulk/CI audits:
 ```bash
@@ -310,24 +322,24 @@ lake exe audit --module MyModule    # all public defs in a module
 
 Fully compiled — no interpreter overhead. Loads `.olean` files, runs `auditConst` natively. The main performance path.
 
-### 3. Record the constant's instantiated type at usage site
+### 2. Record the constant's instantiated type at usage site
 
 When we hit `.const name levels`, record the instantiated type: `ci.type.instantiateLevelParams ci.levelParams levels`. This is pure (no MetaM needed).
 
 Tells us "this extern is being used as `Nat → Nat → Nat`" rather than just "this extern exists."
 
-### 4. (Hard) Record the expected type at the usage site
+### 3. (Hard) Record the expected type at the usage site
 
 What does the surrounding context expect at that position? This requires a third pass using `MetaM` + `withLocalDecl` + `inferType`, targeted at specific constants from the drill-down (not a full re-traversal).
 
-### 5. Extern symbol tracing (stretch)
+### 4. Extern symbol tracing (stretch)
 
 For each extern symbol found, trace it back to the linked native library:
 - Parse `lakefile.toml` for `moreLinkArgs`
 - Find the `.a`/`.so` containing the symbol via `nm`/`objdump`
 - Optionally find C source in the workspace
 
-### 6. Admissibility proof (stretch)
+### 5. Admissibility proof (stretch)
 
 The traversal is `partial` because it follows `.const` references into the `Environment` (the new `Expr` is not structurally smaller). Termination is guaranteed by the `visited` set (at most `env.size` constants), but proving this in Lean requires well-founded recursion on `env.size - visited.size`. Could be done with a fuel parameter but would add noise to the code.
 
@@ -342,6 +354,9 @@ The traversal is `partial` because it follows `.const` references into the `Envi
 - **`MyLeanTermAuditor/Command.lean`** — `#audit` command elaborator
 - **`MyLeanTermAuditor/Filter.lean`** — composable filter/descent predicates, stdlib detection, convenience configs
 - **`MyLeanTermAuditor/StackTrace.lean`** — compile-time stack trace rendering
+- **`TestFixtures/`** — test fixture constants (Extern, Axiom, Opaque, PureStdlib, Chain)
+- **`Tests/Helpers.lean`** — assertion helpers, `runTest`, `runAudit` wrappers
+- **`Tests/Test*.lean`** — 22 tests across 6 test files
 - **`Main.lean`** — five demos: standard, runtime externs, full, drill, multi-constant
 - **`opencode.json`** — MCP server config (lean-lsp-mcp)
 - **`.opencode/skills/lean4/SKILL.md`** — lean4 skill (loaded via `skill` tool)

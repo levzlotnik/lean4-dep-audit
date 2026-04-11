@@ -5,6 +5,13 @@ defaultTargets = ["myleantermauditor"]
 [[lean_lib]]
 name = "MyLeanTermAuditor"
 
+[[lean_lib]]
+name = "TestFixtures"
+
+[[lean_lib]]
+name = "Tests"
+globs = ["Tests"]
+
 [[lean_exe]]
 name = "myleantermauditor"
 root = "Main"

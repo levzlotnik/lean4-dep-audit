@@ -2,14 +2,21 @@
 
 ## Developer Commands
 - Build library only: `lake build MyLeanTermAuditor`
+- Run tests (22 tests): `lake build Tests`
 - Build everything (including Main.lean demos): `lake build`
 - Run executable: `lake exe myleantermauditor` (placeholder — real output is from `#eval` at elaboration time)
 
 ## Verification
 - **Primary**: Check for Lean compiler diagnostics (errors/warnings) via LSP.
+- **Test Suite**: Run `lake build Tests` — 22 `run_cmd` tests across 6 files. Build failure = test failure.
 - **Logic Testing**: Add `#eval` blocks in `.lean` files (e.g., `Main.lean`) to verify auditor results during elaboration.
 - **Build Check**: Run `lake build MyLeanTermAuditor` for fast iteration (skips Main.lean's expensive `#eval` blocks). Run `lake build` for full verification.
 - **Profiling**: Add `set_option profiler true` before `#eval` blocks to see interpretation vs elaboration time.
+
+## Test Architecture
+- **Fixtures** (`TestFixtures/`): Separate `lean_lib` with constants that have specific characteristics (extern, axiom, opaque, pure stdlib, dependency chains). Compiled independently — never rebuilt unless fixtures change.
+- **Tests** (`Tests/`): Import fixtures + `MyLeanTermAuditor`. Each `run_cmd` block calls `auditConst`/`drillDown` directly (pure functions, take `Environment`) and asserts on the `AuditResult`. Assertion failure = build error.
+- **Helpers** (`Tests/Helpers.lean`): `assertHasFinding`, `assertFindingIs`, `assertReachability`, `assertDrillContains`, `assertNumFindings`, `runAudit`, `runAuditMulti`, `runTest` (lifts MetaM → CommandElabM).
 
 ## Architecture
 
