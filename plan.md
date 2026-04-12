@@ -108,7 +108,8 @@ For a project using only stdlib, the standard config correctly reports 0 finding
 - `ExprStep` — inductive: 13 variants for path tracking (future use)
 - `ExprPath` — abbreviation for `Array ExprStep`
 - `SourceLocation` — struct: `module : Name`, `range? : Option DeclarationRange`
-- `FindingInfo` — struct: `name`, `finding`, `location`, `reachableAtRuntime`, `reachableInProof`, `numEncounters`
+- `SymbolProvenance` — inductive: `tracedToSource (cFile oFile aFile)`, `toolchainRuntime (lib)`, `toolchainHeader`, `unresolved`
+- `FindingInfo` — struct: `name`, `finding`, `type`, `typeStr`, `location`, `reachableAtRuntime`, `reachableInProof`, `numEncounters`, `provenance?`
 - `AuditResult` — struct: `findings`, `visited`, `reverseDeps`
 - `DrillResult` — struct: `from_`, `target`, `children : List Name`
 - `ConstContext` — lightweight predicate context: `env`, `name`, `ci`, `levels`, `finding`, `inProofTerm`, `depth`, `constStack`
@@ -119,6 +120,14 @@ For a project using only stdlib, the standard config correctly reports 0 finding
 - `getExternSymbol?` — extracts extern symbol from `ExternAttrData.entries`
 - `classifyOpaqueKind` — sub-classifies opaques using init attrs and value shape
 - `classifyConst` — classifies `ConstantInfo` as interesting or not (externs take priority over opaques)
+
+**`ExternSourceProvenance.lean`:**
+- `nmDefinedSymbols` — shells out to `nm --defined-only`, parses output into `Std.HashSet String`
+- `parseTraceInputPaths` / `traceStaticLibInputs` / `traceObjectInput` — reads Lake `.trace` JSON files, extracts input file paths
+- `isStaticInlineInHeader` — scans `lean.h` for `static inline` declarations matching a symbol
+- `indexLibrarySymbols` — builds symbol → `.a` path map from all libs in a directory
+- `traceSymbolToSource` — follows full chain: `.a.trace` → `.o` → `nm` → `.o.trace` → `.c` → exists on disk
+- `resolveProvenance` — main entry point: processes all extern findings, falls back through toolchain runtime / lean.h header / unresolved
 
 **`Traverse.lean`:**
 - `TraversalState` — threads `currentConst?`, `inProofTerm`, `depth`, `constStack`
@@ -167,7 +176,7 @@ Five demos on `myMain : IO Unit` (reads stdin, prints greeting):
 4. **Drill-down:** "Why does myMain depend on propext?" → IO.println, String.Slice.instToString, instAppendString, String.trimAscii
 5. **Multiple constants:** `(myMain, main)` — shared AuditResult, 25 visited, 0 findings
 
-### Test Suite (29 tests, all passing)
+### Test Suite (34 tests, all passing)
 
 Fixtures in `TestFixtures/` (separate `lean_lib`, compiled independently), tests in `Tests/` that import fixtures + auditor. `lake build Tests` = run all tests. Assertion failure = build error.
 
@@ -185,7 +194,7 @@ Fixtures in `TestFixtures/` (separate `lean_lib`, compiled independently), tests
 - `lakefile.lean` — `extern_lib` target compiling `c/ffi.c` → `libffi.a`, with `precompileModules := true`
 - Build produces `libffi.a` with verified symbols (`nm` confirms `test_ffi_add`, `test_ffi_toggle`, `test_ffi_const42`)
 
-**Test files (29 `run_cmd` blocks):**
+**Test files (34 `run_cmd` blocks):**
 - `Tests/TestExtern.lean` (4 tests) — extern classification, transitive detection, dual externs, standard config, reachability flags
 - `Tests/TestAxiom.lean` (4 tests) — axiom classification, transitive detection, standard config, sorry → `sorryAx` (classified as `extern_ "lean_sorry"` since `@[extern]` takes priority)
 - `Tests/TestOpaque.lean` (3 tests) — partial def, implementedBy classification, standard config
@@ -193,6 +202,7 @@ Fixtures in `TestFixtures/` (separate `lean_lib`, compiled independently), tests
 - `Tests/TestDrillDown.lean` (4 tests) — single-path drill, multi-path drill, non-existent target, extern finding detection
 - `Tests/TestMulti.lean` (3 tests) — shared visited dedup, disjoint trees, combined visit count ≥ individual
 - `Tests/TestFfi.lean` (7 tests) — **real linked FFI**: extern classification with correct symbol names, transitive detection through callers, multi-extern detection, drill-down through FFI dependency chains, standard config flags non-standard FFI externs, runtime reachability, thunk-pattern extern
+- `Tests/TestTypeInfo.lean` (5 tests) — declared type recording: type field non-default, typeStr populated by resolveLocations, extern/axiom/opaque type strings contain expected fragments
 
 **Test infrastructure:**
 - `Tests/Helpers.lean` — assertion helpers (`assertHasFinding`, `assertFindingIs`, `assertReachability`, `assertDrillContains`, etc.), `runAudit`/`runAuditMulti` wrappers, `runTest` lifts `MetaM` into `CommandElabM`
@@ -220,6 +230,7 @@ MyLeanTermAuditor/
     Command.lean              # #audit command elaborator
     StackTrace.lean           # StackFrame, toFrames, toStackTrace, DrillResult.toTraceString
     Filter.lean               # Filter/Descend combinators, standard library detection, convenience configs
+    ExternSourceProvenance.lean # IO-based extern symbol → C source tracing via Lake trace files
     CLI.lean                  # CLI: filter DSL parser, arg parser, formatters, run entry point
   test-packages/
     ffi-fixture/              # Real Lake package with C FFI (required dependency)
@@ -251,9 +262,9 @@ MyLeanTermAuditor/
   Demo.lean                   # demos: standard, runtime externs, full, drill, multi-constant
 ```
 
-Dependency chain: `Types ← Classify ← Traverse ← Monad ← Command`, `Types ← StackTrace ← Filter`, `Filter + Traverse + Monad ← CLI`.
+Dependency chain: `Types ← Classify ← Traverse ← Monad ← Command`, `Types ← StackTrace ← Filter`, `Types ← ExternSourceProvenance`, `Filter + Traverse + Monad + ExternSourceProvenance ← CLI`.
 
-Build targets: `lake build MyLeanTermAuditor` (library), `lake build Tests` (run 29 tests), `lake build audit` or `lake build` (CLI executable), `lake build demo` (elaboration-time demos).
+Build targets: `lake build MyLeanTermAuditor` (library), `lake build Tests` (run 34 tests), `lake build audit` or `lake build` (CLI executable), `lake build demo` (elaboration-time demos).
 
 ---
 
@@ -377,11 +388,11 @@ Generates symbols with `_alloy_c_l_` prefix. The C code lives in the `.lean` fil
 
 ### Three categories of extern symbols in a linked executable
 
-| Category | Where it lives | Example |
-|----------|---------------|---------|
-| **Header-only** (`static inline` in `lean.h`) | Inlined at compile time, no `.so` symbol | `lean_nat_add`, `lean_array_get_size` |
-| **Runtime library** (in `libleanrt.a` / `libleanshared.so`) | Toolchain `lib/lean/` directory | `lean_string_append`, `lean_get_stdin` |
-| **User/project library** (in `.lake/build/lib/*.a`) | Project build directory | `test_ffi_add` (from extern_lib) |
+| Category | Where it lives | Example | Provenance |
+|----------|---------------|---------|------------|
+| **Header-only** (`static inline` in `lean.h`) | Inlined at compile time, no `.so` symbol | `lean_nat_add`, `lean_nat_dec_le` | `toolchainHeader` |
+| **Runtime library** (in `libleanrt.a` / `libleanshared.so`) | Toolchain `lib/lean/` directory | `lean_string_append`, `lean_array_push` | `toolchainRuntime` |
+| **User/project library** (in `.lake/build/lib/*.a`) | Project build directory | `test_ffi_add` (from extern_lib) | `tracedToSource` (if `.c` found via trace files) |
 
 ### What's available at elaboration time
 
@@ -390,9 +401,10 @@ Generates symbols with `_alloy_c_l_` prefix. The C code lives in the `.lean` fil
 - `env.getModuleIdxFor? name` → which module a constant is from (determines stdlib vs user)
 
 What's NOT available without shelling out:
-- Which specific library file provides a given symbol
-- Whether a symbol is header-only or a real linked symbol
-- Lake build configuration (`moreLinkArgs`, `extern_lib` targets)
+- Which specific library file provides a given symbol — **now resolved by `nm` in `ExternSourceProvenance.lean`**
+- Whether a symbol is header-only or a real linked symbol — **now resolved by scanning `lean.h`**
+- Lake build configuration (`moreLinkArgs`, `extern_lib` targets) — Lake doesn't expose this as structured metadata; `ExternLibConfig.getPath` is an opaque closure
+- **However:** Lake's build trace files (`.trace` JSON) record the full input→output chain for every artifact. `ExternSourceProvenance.lean` reads these to trace `.a` → `.o` → `.c` source paths without needing Lake's internal APIs
 
 ---
 
@@ -440,21 +452,17 @@ Output now shows types inline: `testExternFn [extern "test_c_fn"] [runtime] : Na
 
 **Files changed:** `Types.lean` (new fields), `Traverse.lean` (record `ci.type` + pretty-print in `resolveLocations`), `CLI.lean` + `Command.lean` (formatters display type), `Tests/Helpers.lean` (new `assertHasType`/`assertTypeStrContains`), `Tests/TestTypeInfo.lean` (5 new tests).
 
-**Tests:** 34 unit tests pass (29 original + 5 new type-info tests), 17 CLI integration tests pass.
+**Tests:** 34 unit tests pass (29 original + 5 new type-info tests), 26 CLI integration tests pass.
 
-### 3. (Hard) Record the expected type at the usage site
-
-What does the surrounding context expect at that position? This requires a third pass using `MetaM` + `withLocalDecl` + `inferType`, targeted at specific constants from the drill-down (not a full re-traversal).
-
-### 4. Extern symbol tracing + package-level test infrastructure
+### 3. Extern symbol tracing + package-level test infrastructure
 
 Trace each `@[extern]` symbol back to its native implementation. This is the auditor's core value proposition for real projects — answering "what C code does my binary actually link?"
 
-#### 4a. Convert to `lakefile.lean` ✅
+#### 3a. Convert to `lakefile.lean` ✅
 
 Done. The main project switched from `lakefile.toml` to `lakefile.lean` to support `extern_lib` targets and `require` local path dependencies.
 
-#### 4b. Package-level test fixtures ✅
+#### 3b. Package-level test fixtures ✅
 
 Done. Created `test-packages/ffi-fixture/` — a real Lake package with:
 - `c/ffi.c` — three C functions: `test_ffi_add` (UInt32 addition), `test_ffi_toggle` (Bool negation), `test_ffi_const42` (thunk returning 42)
@@ -474,47 +482,61 @@ The root project's `lakefile.lean` declares `require FfiFixture from "test-packa
 - A package using `moreLinkArgs` to link a system library (e.g., `-lm` for `sin`/`cos`)
 - A package using the Alloy approach (inline C in `.lean` files) if we want to detect that pattern
 
-#### 4c. Symbol provenance resolution
+#### 3c. Symbol provenance resolution ✅
 
-Enrich `FindingInfo` with a `SymbolProvenance` type:
+Done. Each extern `FindingInfo` now carries a `provenance? : Option SymbolProvenance` field, populated by `resolveProvenance : AuditResult → SearchPath → IO AuditResult`. This is a post-processing step that runs after `resolveLocations`, in `IO` (no `MetaM`).
 
+**`SymbolProvenance` type:**
 ```lean
 inductive SymbolProvenance where
-  | toolchainRuntime   (lib : FilePath)    -- found in libleanrt.a or libleanshared.so
-  | toolchainHeader                         -- static inline in lean.h (no .so symbol)
-  | toolchainModule    (lib : FilePath)    -- found in libInit.a / libStd.a / libLean.a
-  | projectLib         (lib : FilePath)    -- found in .lake/build/lib/*.a (extern_lib)
-  | systemLib          (flag : String)     -- from moreLinkArgs -l flag
-  | unresolved                              -- symbol not found in any searched location
+  | tracedToSource (cFile : String) (oFile : String) (aFile : String)  -- full trust chain
+  | toolchainRuntime (lib : String)    -- found in libleanrt.a
+  | toolchainHeader                     -- static inline in lean.h
+  | unresolved                          -- not found anywhere, sus
 ```
 
-Resolution strategy:
-1. Get the extern symbol name from `ExternAttrData` (already done by `Classify.lean`)
-2. Get the search path directories from `searchPathRef` (needs `IO`)
-3. For each `.a`/`.so` in the search path, run `nm` to check if the symbol is defined
-4. For header-only symbols, parse `lean.h` for `static inline` declarations containing the symbol name
-5. Classify the provenance based on which library matched
+**Resolution strategy (implemented in `ExternSourceProvenance.lean`):**
+1. Compute library directories from `searchPathRef` entries (each entry + parent, plus toolchain `lib/lean/`)
+2. Build symbol → `.a` index by running `nm --defined-only` on all `.a` files found
+3. For each extern finding, look up the symbol:
+   - Found in toolchain `libleanrt.a` → `toolchainRuntime`
+   - Found in a project/package `.a` → trace through Lake build artifacts:
+     - Read `.a.trace` → get `.o` file paths
+     - Run `nm` on each `.o` to find which one contains the symbol
+     - Read matching `.o.trace` → get `.c` source path
+     - Verify `.c` exists on disk → `tracedToSource cFile oFile aFile`
+   - Not found in any `.a` → check `lean.h` for `static inline` → `toolchainHeader` or `unresolved`
 
-This requires `IO` (shelling out to `nm`, reading `lean.h`), so it's a post-processing step like `resolveLocations` — not part of the pure first pass.
+**Verified results:**
+- FFI fixture `test_ffi_add` → `tracedToSource "…/ffi-fixture/c/ffi.c" "…/ffi.o" "…/libffi.a"`
+- Stdlib `lean_array_push` → `toolchainRuntime "…/libleanrt.a"`
+- Stdlib `lean_nat_dec_le` → `toolchainHeader`
 
-#### 4d. Lakefile parsing (for user projects)
+**Serializable types:** `SymbolProvenanceSer` with `deriving ToJson, FromJson`, `provenance?` field on `FindingInfoSer`. JSON round-trips correctly.
 
-For `moreLinkArgs`-style linking, we need to read the project's lakefile to discover `-l` and `-L` flags. Options:
-- Parse `lakefile.toml` directly (structured, easy)
-- For `lakefile.lean`, extract `moreLinkArgs` from the Lake environment (harder — Lake's internal data model)
-- Or just scan the built `.lake/build/` directory for `.a`/`.so` files that aren't from the toolchain
+**YAML output** shows provenance per extern finding:
+```yaml
+provenance: traced "/path/to/c/ffi.c"
+provenance: toolchain-runtime "/path/to/libleanrt.a"
+provenance: toolchain-header
+provenance: UNRESOLVED
+```
 
-#### 4e. Tests for symbol tracing
+**CLI integration:** `resolveProvenance` runs automatically in `CLI.run` after `resolveLocations`. All 34 unit tests + 26 CLI integration tests pass.
+
+**Files:** `MyLeanTermAuditor/ExternSourceProvenance.lean` (new, 248 lines), `Types.lean` (updated), `CLI.lean` (updated), `MyLeanTermAuditor.lean` (updated import).
+
+**Design note:** The original plan had 6 variants (`toolchainModule`, `projectLib`, `systemLib`). The implementation simplified to 4 variants focused on the core audit question: "can I trace this to readable source code?" The `tracedToSource` variant records the full chain (`.c`, `.o`, `.a`), while the toolchain variants are known-trusted. Anything else is `unresolved` = sus. The `toolchainModule` distinction (libInit.a vs libleanrt.a) was dropped because both are toolchain-trusted. `systemLib` (from `moreLinkArgs`) was deferred — we'd need to parse lakefile link flags, which we explicitly decided not to do.
+
+#### 3d. Tests for symbol tracing
 
 Add tests to `Tests/` that:
-- Audit an FFI fixture constant and verify its extern symbol resolves to the fixture's `.a` file
-- Audit a stdlib extern and verify it resolves to the toolchain runtime
-- Audit a user `@[extern]` with no backing native code and verify it's classified as `unresolved`
-- Test the provenance classification for each category
-
-### 5. Admissibility proof (stretch)
-
-The traversal is `partial` because it follows `.const` references into the `Environment` (the new `Expr` is not structurally smaller). Termination is guaranteed by the `visited` set (at most `env.size` constants), but proving this in Lean requires well-founded recursion on `env.size - visited.size`. Could be done with a fuel parameter but would add noise to the code.
+- Audit an FFI fixture constant and verify its extern symbol resolves to `tracedToSource` with the correct `.c` file path
+- Audit a stdlib extern (e.g. `Array.push`) and verify it resolves to `toolchainRuntime`
+- Audit a header-only extern (e.g. `Nat.ble`) and verify it resolves to `toolchainHeader`
+- Audit a user `@[extern]` with no backing native code (test fixture) and verify it's classified as `unresolved`
+- Test the full chain: `cFile` in `tracedToSource` actually ends with the expected filename
+- Add CLI integration tests that check provenance substrings in YAML output and provenance fields in JSON output
 
 ---
 
@@ -526,6 +548,7 @@ The traversal is `partial` because it follows `.const` references into the `Envi
 - **`MyLeanTermAuditor/Monad.lean`** — AuditM monad, monadic wrappers
 - **`MyLeanTermAuditor/Command.lean`** — `#audit` command elaborator
 - **`MyLeanTermAuditor/Filter.lean`** — composable filter/descent predicates, stdlib detection, convenience configs
+- **`MyLeanTermAuditor/ExternSourceProvenance.lean`** — IO-based extern symbol → C source tracing via Lake trace files (`nm`, `.trace` JSON, `lean.h` scanning)
 - **`MyLeanTermAuditor/CLI.lean`** — CLI: filter DSL parser, arg parser, formatters, `run` entry point
 - **`MyLeanTermAuditor/StackTrace.lean`** — compile-time stack trace rendering
 - **`test-packages/ffi-fixture/`** — real Lake package with C FFI (extern_lib, libffi.a)
@@ -533,7 +556,7 @@ The traversal is `partial` because it follows `.const` references into the `Envi
 - **`test-packages/ffi-fixture/FfiFixture/Basic.lean`** — @[extern] bindings + callers
 - **`TestFixtures/`** — in-project test fixture constants (Extern, Axiom, Opaque, PureStdlib, Chain)
 - **`Tests/Helpers.lean`** — assertion helpers, `runTest`, `runAudit` wrappers
-- **`Tests/Test*.lean`** — 29 tests across 7 test files (including TestFfi.lean for real FFI)
+- **`Tests/Test*.lean`** — 34 tests across 8 test files (including TestFfi.lean for real FFI, TestTypeInfo.lean for declared types)
 - **`Main.lean`** — CLI entry point (`def main := CLI.run`)
 - **`Demo.lean`** — five demos: standard, runtime externs, full, drill, multi-constant
 - **`opencode.json`** — MCP server config (lean-lsp-mcp)

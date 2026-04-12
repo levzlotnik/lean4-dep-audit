@@ -76,16 +76,6 @@ def assertHasType (result : AuditResult) (name : Name) (ctx : String := "") : Me
       throwError "{ctx}Expected '{name}' to have a type recorded, but got default Sort 0"
   | none => throwError "{ctx}Expected '{name}' in findings, but it was not found"
 
-/-- Check if `haystack` contains `needle` as a substring. -/
-private def String.hasSubstr (haystack needle : String) : Bool :=
-  let hLen := haystack.length
-  let nLen := needle.length
-  if nLen > hLen then false
-  else Id.run do
-    for i in List.range (hLen - nLen + 1) do
-      if (haystack.drop i).startsWith needle then return true
-    return false
-
 /-- Assert that a finding's pretty-printed type string contains a substring. -/
 def assertTypeStrContains (result : AuditResult) (name : Name) (substr : String)
     (ctx : String := "") : MetaM Unit := do

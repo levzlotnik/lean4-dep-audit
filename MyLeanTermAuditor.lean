@@ -8,4 +8,6 @@ import MyLeanTermAuditor.StackTrace
 import MyLeanTermAuditor.Filter
 import MyLeanTermAuditor.Monad
 import MyLeanTermAuditor.Command
+import MyLeanTermAuditor.ExternSourceProvenance
+import MyLeanTermAuditor.ExternCAudit
 import MyLeanTermAuditor.CLI

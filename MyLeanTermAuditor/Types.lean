@@ -2,6 +2,18 @@ import Lean
 
 open Lean
 
+/-- Check if `haystack` contains `needle` as a substring. -/
+def String.hasSubstr (haystack needle : String) : Bool :=
+  if needle.isEmpty then true
+  else
+    let hLen := haystack.length
+    let nLen := needle.length
+    if nLen > hLen then false
+    else Id.run do
+      for i in List.range (hLen - nLen + 1) do
+        if (haystack.drop i).startsWith needle then return true
+      return false
+
 namespace MyLeanTermAuditor
 
 /-- Sub-classification of opaque constants.
@@ -90,6 +102,43 @@ instance : ToString SourceLocation where
     s!"{loc.module}{rangeStr}"
 
 -- ============================================================================
+-- Extern symbol provenance
+-- ============================================================================
+
+/-- Where an extern symbol's implementation comes from. -/
+inductive SymbolProvenance where
+  /-- Traced through .a.trace → .o.trace → .c source file on disk. Full trust chain. -/
+  | tracedToSource (cFile : String) (oFile : String) (aFile : String)
+  /-- Found in the Lean toolchain runtime library (libleanrt.a). Known quantity. -/
+  | toolchainRuntime (lib : String)
+  /-- static inline in lean.h — no link symbol, inlined at compile time. -/
+  | toolchainHeader
+  /-- Found in a .a file but couldn't trace back to C source. Binary blob — sus. -/
+  | binaryOnly (lib : String)
+  /-- Symbol not found anywhere through conventional Lake build chain. Sus. -/
+  | unresolved
+  deriving Repr, BEq, Inhabited
+
+-- ============================================================================
+-- C type compatibility check result
+-- ============================================================================
+
+/-- Result of C type compatibility check for extern symbols. -/
+inductive CTypeCheckResult where
+  | compatible (line : Nat := 0)        -- C types match Lean declaration; line in C source
+  | mismatch (details : String) (line : Nat := 0) -- types don't match — CRITICAL finding
+  | unparseable (reason : String)       -- couldn't parse C source — SUS
+  | notChecked                          -- no C source to check (toolchain/unresolved)
+  deriving Repr, BEq, Inhabited
+
+instance : ToString CTypeCheckResult where
+  toString
+    | .compatible _    => "compatible"
+    | .mismatch d _    => s!"MISMATCH: {d}"
+    | .unparseable r   => s!"UNPARSEABLE: {r}"
+    | .notChecked      => "not-checked"
+
+-- ============================================================================
 -- First pass: fast classification (no paths)
 -- ============================================================================
 
@@ -112,6 +161,10 @@ structure FindingInfo where
   reachableInProof   : Bool := false
   /-- How many times this constant was encountered during traversal. -/
   numEncounters      : Nat := 0
+  /-- Where the extern symbol's native implementation lives, filled by `resolveProvenance`. -/
+  provenance?        : Option SymbolProvenance := none
+  /-- Result of C type compatibility check, filled by `resolveTypeAudit`. -/
+  typeCheck          : CTypeCheckResult := .notChecked
   deriving Inhabited
 
 /-- The result of the first (fast) audit pass.
@@ -219,6 +272,36 @@ def AuditConfig.default : AuditConfig := {}
 -- Serializable types for JSON round-tripping
 -- ============================================================================
 
+/-- Serializable version of SymbolProvenance. -/
+inductive SymbolProvenanceSer where
+  | tracedToSource (cFile : String) (oFile : String) (aFile : String)
+  | toolchainRuntime (lib : String)
+  | toolchainHeader
+  | binaryOnly (lib : String)
+  | unresolved
+  deriving Repr, ToJson, FromJson
+
+/-- Serializable version of CTypeCheckResult. -/
+inductive CTypeCheckResultSer where
+  | compatible (line : Nat := 0)
+  | mismatch (details : String) (line : Nat := 0)
+  | unparseable (reason : String)
+  | notChecked
+  deriving Repr, ToJson, FromJson
+
+def CTypeCheckResult.serialize : CTypeCheckResult → CTypeCheckResultSer
+  | .compatible l    => .compatible l
+  | .mismatch d l    => .mismatch d l
+  | .unparseable r => .unparseable r
+  | .notChecked    => .notChecked
+
+def SymbolProvenance.serialize : SymbolProvenance → SymbolProvenanceSer
+  | .tracedToSource c o a => .tracedToSource c o a
+  | .toolchainRuntime l => .toolchainRuntime l
+  | .toolchainHeader => .toolchainHeader
+  | .binaryOnly l => .binaryOnly l
+  | .unresolved => .unresolved
+
 /-- Serializable version of `FindingInfo`. Replaces `Expr` with its pretty-printed
     string and `SourceLocation` with its string representation. -/
 structure FindingInfoSer where
@@ -229,6 +312,8 @@ structure FindingInfoSer where
   reachableAtRuntime : Bool
   reachableInProof   : Bool
   numEncounters      : Nat
+  provenance?        : Option SymbolProvenanceSer := none
+  typeCheck          : CTypeCheckResultSer := .notChecked
   deriving ToJson, FromJson
 
 /-- Serializable version of `DrillResult`. -/
@@ -254,6 +339,8 @@ def FindingInfo.serialize (fi : FindingInfo) : FindingInfoSer := {
   reachableAtRuntime := fi.reachableAtRuntime
   reachableInProof   := fi.reachableInProof
   numEncounters      := fi.numEncounters
+  provenance?        := fi.provenance?.map SymbolProvenance.serialize
+  typeCheck          := fi.typeCheck.serialize
 }
 
 def DrillResult.serialize (dr : DrillResult) : DrillResultSer := {

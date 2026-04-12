@@ -4,6 +4,8 @@ import MyLeanTermAuditor.Types
 import MyLeanTermAuditor.Filter
 import MyLeanTermAuditor.Traverse
 import MyLeanTermAuditor.Monad
+import MyLeanTermAuditor.ExternSourceProvenance
+import MyLeanTermAuditor.ExternCAudit
 
 open Lean
 open MyLeanTermAuditor
@@ -314,12 +316,33 @@ private def findingReachability (fi : FindingInfo) : String :=
 
 private def yamlFinding (fi : FindingInfo) : String :=
   let typeStr := if fi.typeStr.isEmpty then "unknown" else fi.typeStr
+  let cLine := match fi.typeCheck with
+    | .compatible l | .mismatch _ l => if l > 0 then some l else none
+    | _ => none
+  let provStr := match fi.provenance? with
+    | some (.tracedToSource c _o _a) =>
+      let loc := match cLine with | some l => s!"{c}:{l}" | none => c
+      s!"\n    provenance: traced \"{loc}\""
+    | some (.toolchainRuntime l) => s!"\n    provenance: toolchain-runtime \"{l}\""
+    | some .toolchainHeader =>
+      let loc := match cLine with | some l => s!"lean.h:{l}" | none => "lean.h"
+      s!"\n    provenance: toolchain-header ({loc})"
+    | some (.binaryOnly l) => s!"\n    provenance: BINARY-ONLY \"{l}\""
+    | some .unresolved => s!"\n    provenance: UNRESOLVED"
+    | none => ""
+  let typeCheckStr := match fi.typeCheck with
+    | .compatible _ => s!"\n    type-check: compatible"
+    | .mismatch d _ => s!"\n    type-check: MISMATCH {d}"
+    | .unparseable r => s!"\n    type-check: UNPARSEABLE ({r})"
+    | .notChecked => ""
   s!"  - name: {fi.name}\n" ++
   s!"    kind: {findingKind fi}\n" ++
   s!"    type: \"{typeStr}\"\n" ++
   s!"    reachability: {findingReachability fi}\n" ++
   s!"    location: \"{fi.location}\"\n" ++
-  s!"    encounters: {fi.numEncounters}"
+  s!"    encounters: {fi.numEncounters}" ++
+  provStr ++
+  typeCheckStr
 
 private def yamlDrill (dr : DrillResult) : String :=
   if dr.children.isEmpty then
@@ -453,6 +476,11 @@ def run (args : List String) : IO UInt32 := do
     match eiResult with
     | .ok ((r, _), _) => pure r
     | .error _         => pure result
+  -- Resolve extern symbol provenance
+  let resolved ← resolveProvenance resolved (← Lean.searchPathRef.get)
+  -- Audit C type compatibility
+  let sysroot ← try Lean.findSysroot catch _ => pure (System.FilePath.mk "")
+  let resolved ← resolveTypeAudit resolved env sysroot
   -- Collect drill-down results
   let mut drills : Array DrillResult := #[]
   for target in config.drill do

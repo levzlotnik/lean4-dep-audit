@@ -9,18 +9,6 @@ import MyLeanTermAuditor
 
 open Lean MyLeanTermAuditor
 
-/-- Check if `haystack` contains `needle` as a substring. -/
-def String.hasSubstr (haystack needle : String) : Bool :=
-  if needle.isEmpty then true
-  else
-    let hLen := haystack.length
-    let nLen := needle.length
-    if nLen > hLen then false
-    else Id.run do
-      for i in List.range (hLen - nLen + 1) do
-        if (haystack.drop i).startsWith needle then return true
-      return false
-
 -- ============================================================================
 -- Test infrastructure
 -- ============================================================================

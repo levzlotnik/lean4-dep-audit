@@ -3,7 +3,7 @@
 ## Developer Commands
 - Build library only: `lake build MyLeanTermAuditor`
 - Run tests (34 tests): `lake build Tests`
-- Run CLI integration tests (17 tests): `lake build audit && lake build test_cli && lake exe test_cli`
+- Run CLI integration tests (26 tests): `lake build audit && lake build test_cli && lake exe test_cli`
 - Build CLI executable: `lake build audit` (or `lake build`, it's the default target)
 - Build demos: `lake build demo`
 - Run CLI: `lake exe audit <constant> --import <module> [--config standard|full|...] [--report <dsl>] [--drill <name>]`
@@ -34,6 +34,8 @@ Read `plan.md` for the full design document. Key points below.
 
 **`resolveLocations`:** `AuditResult → MetaM AuditResult`. Optional post-processing that fills in source locations and pretty-prints declared types. The only part that needs MetaM.
 
+**`resolveProvenance`:** `AuditResult → SearchPath → IO AuditResult`. Post-processing that traces each `@[extern]` symbol back to its C source through Lake's build trace files. Shells out to `nm`, reads `.trace` JSON, scans `lean.h`. Classifies as `tracedToSource` (full chain to `.c`), `toolchainRuntime` (in `libleanrt.a`), `toolchainHeader` (`static inline` in `lean.h`), or `unresolved` (sus).
+
 ### Critical Constraints
 
 **Do not add MetaM to the first pass.** Every attempt caused severe performance problems:
@@ -52,6 +54,7 @@ Read `plan.md` for the full design document. Key points below.
 ```
 Types ← Classify ← Traverse
 Types ← StackTrace ← Filter
+Types ← ExternSourceProvenance
 ```
 
 ### What's Currently Unused
@@ -70,7 +73,10 @@ auditConst (pure)  ──►  AuditResult { findings, visited, reverseDeps }
     │                    resolveLocations (MetaM, optional)
     │                         │
     │                         ▼
-    │                    AuditResult (with source locations filled in)
+    │                    resolveProvenance (IO, optional)
+    │                         │
+    │                         ▼
+    │                    AuditResult (with source locations + provenance filled in)
     │                         │
     ▼                         ▼
 drillDown (pure)  ◄──  AuditResult
