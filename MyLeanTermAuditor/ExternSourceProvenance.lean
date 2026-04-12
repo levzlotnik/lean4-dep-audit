@@ -138,6 +138,30 @@ def indexLibrarySymbols (dir : FilePath) : IO (Std.HashMap String FilePath) := d
   return index
 
 -- ============================================================================
+-- Step 4b: Harvest linked libraries from trace files
+-- TODO: 'binaryOnly' edge case is in review, this is placeholder
+-- ============================================================================
+
+-- /-- Scan `.trace` files in the given directories to discover additional `.a` files
+--     referenced as link inputs (e.g. from `input_file` + `moreLinkObjs`).
+--     Returns deduplicated paths to `.a` files that actually exist on disk. -/
+-- private def harvestLinkedLibraries (dirs : Array FilePath) : IO (Array FilePath) := do
+--   let mut seen : Std.HashSet String := {}
+--   let mut result : Array FilePath := #[]
+--   for dir in dirs do
+--     let entries ← try dir.readDir catch _ => pure #[]
+--     for entry in entries do
+--       if entry.fileName.endsWith ".trace" then
+--         let inputPaths ← parseTraceInputPaths entry.path
+--         for p in inputPaths do
+--           if p.endsWith ".a" && !seen.contains p then
+--             let fp : FilePath := p
+--             if ← fp.pathExists then
+--               seen := seen.insert p
+--               result := result.push fp
+--   return result
+
+-- ============================================================================
 -- Step 5: Full source chain tracing
 -- ============================================================================
 
@@ -207,6 +231,16 @@ def resolveProvenance (result : AuditResult) (searchPath : Lean.SearchPath) : IO
     for (sym, lib) in dirIndex do
       if !symbolIndex.contains sym then
         symbolIndex := symbolIndex.insert sym lib
+  -- TODO: 'binaryOnly' edge case is in review, this is placeholder
+  -- Harvest additional .a files referenced in trace files (e.g. input_file + moreLinkObjs)
+  -- let harvestedLibs ← harvestLinkedLibraries uniqueDirs
+  -- for aFile in harvestedLibs do
+  --   let alreadyIndexed := uniqueDirs.any fun d => aFile.toString.startsWith (d.toString ++ "/")
+  --   if !alreadyIndexed then
+  --     let syms ← nmDefinedSymbols aFile
+  --     for sym in syms do
+  --       if !symbolIndex.contains sym then
+  --         symbolIndex := symbolIndex.insert sym aFile
   -- Process each extern finding
   let mut findings := result.findings
   let findingsArr := result.findingsArray
@@ -224,8 +258,9 @@ def resolveProvenance (result : AuditResult) (searchPath : Lean.SearchPath) : IO
             match ← traceSymbolToSource aFile sym with
             | some prov => pure prov
             | none =>
-              -- Found in a .a but couldn't trace back to C source — sus
-              pure (SymbolProvenance.binaryOnly aFile.toString)
+              -- TODO: 'binaryOnly' edge case is in review, this is placeholder
+              -- Previously: pure (SymbolProvenance.binaryOnly aFile.toString)
+              pure SymbolProvenance.unresolved
         | none =>
           -- Not found in any .a — check if it's a static inline in lean.h
           if ← isStaticInlineInHeader sysroot sym then

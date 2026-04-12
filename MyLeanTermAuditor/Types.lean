@@ -113,8 +113,9 @@ inductive SymbolProvenance where
   | toolchainRuntime (lib : String)
   /-- static inline in lean.h — no link symbol, inlined at compile time. -/
   | toolchainHeader
-  /-- Found in a .a file but couldn't trace back to C source. Binary blob — sus. -/
-  | binaryOnly (lib : String)
+  -- TODO: 'binaryOnly' edge case is in review, this is placeholder
+  -- /-- Found in a .a file but couldn't trace back to C source. Binary blob — sus. -/
+  -- | binaryOnly (lib : String)
   /-- Symbol not found anywhere through conventional Lake build chain. Sus. -/
   | unresolved
   deriving Repr, BEq, Inhabited
@@ -277,7 +278,8 @@ inductive SymbolProvenanceSer where
   | tracedToSource (cFile : String) (oFile : String) (aFile : String)
   | toolchainRuntime (lib : String)
   | toolchainHeader
-  | binaryOnly (lib : String)
+  -- TODO: 'binaryOnly' edge case is in review, this is placeholder
+  -- | binaryOnly (lib : String)
   | unresolved
   deriving Repr, ToJson, FromJson
 
@@ -299,7 +301,8 @@ def SymbolProvenance.serialize : SymbolProvenance → SymbolProvenanceSer
   | .tracedToSource c o a => .tracedToSource c o a
   | .toolchainRuntime l => .toolchainRuntime l
   | .toolchainHeader => .toolchainHeader
-  | .binaryOnly l => .binaryOnly l
+  -- TODO: 'binaryOnly' edge case is in review, this is placeholder
+  -- | .binaryOnly l => .binaryOnly l
   | .unresolved => .unresolved
 
 /-- Serializable version of `FindingInfo`. Replaces `Expr` with its pretty-printed

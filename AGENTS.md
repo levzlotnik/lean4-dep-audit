@@ -85,6 +85,10 @@ drillDown (pure)  ◄──  AuditResult
 DrillResult { from_, target, children }
 ```
 
+## Shell Rules
+
+- **NEVER use heredocs** (`<< EOF`, `<< 'EOF'`, etc.) in Bash commands. Write files using the Write tool instead.
+
 ## Working with the Owner
 
 - Has strong opinions about data structure design — explain your reasoning before implementing

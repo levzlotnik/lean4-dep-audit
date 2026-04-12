@@ -327,7 +327,8 @@ private def yamlFinding (fi : FindingInfo) : String :=
     | some .toolchainHeader =>
       let loc := match cLine with | some l => s!"lean.h:{l}" | none => "lean.h"
       s!"\n    provenance: toolchain-header ({loc})"
-    | some (.binaryOnly l) => s!"\n    provenance: BINARY-ONLY \"{l}\""
+    -- TODO: 'binaryOnly' edge case is in review, this is placeholder
+    -- | some (.binaryOnly l) => s!"\n    provenance: BINARY-ONLY \"{l}\""
     | some .unresolved => s!"\n    provenance: UNRESOLVED"
     | none => ""
   let typeCheckStr := match fi.typeCheck with
