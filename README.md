@@ -142,7 +142,7 @@ lake exe audit myMain --import MyModule --report '!stdlib' --descend skipProofs
 
 ## Architecture
 
-Two-pass design, pure where it matters:
+Two-pass design:
 
 ```
 Environment
@@ -167,21 +167,21 @@ drillDown (pure)  <--        |
 DrillResult              output (YAML / JSON)
 ```
 
-**Pass 1 (`auditConst`):** Pure `Environment -> AuditConfig -> Name -> AuditResult`.
+**Pass 1 (`auditConst`):** `Environment -> AuditConfig -> Name -> AuditResult`.
 Walks all reachable constants via `Expr.foldConsts`, classifies findings, records
-reachability flags, builds a reverse dependency DAG. No MetaM, no IO. Handles
-4,300+ constants for a typical `IO Unit` program.
+reachability flags, builds a reverse dependency DAG. Handles 4,300+ constants
+for a typical `IO Unit` program.
 
-**Pass 2 (`drillDown`):** Pure `Environment -> Name -> Name -> AuditResult -> DrillResult`.
+**Pass 2 (`drillDown`):** `Environment -> Name -> Name -> AuditResult -> DrillResult`.
 Answers "which direct deps of X lead to target Y?" via BFS ancestor set +
 immediate dependency intersection on the pre-computed DAG.
 
 **Post-processing (optional):**
-- `resolveLocations` -- fills in source locations and pretty-printed types (needs MetaM)
+- `resolveLocations` -- fills in source locations and pretty-printed types
 - `resolveProvenance` -- traces extern symbols through Lake build artifacts:
-  `.a` -> `.a.trace` -> `.o` -> `.o.trace` -> `.c` (needs IO, runs `nm`)
+  `.a` -> `.a.trace` -> `.o` -> `.o.trace` -> `.c` (runs `nm`)
 - `resolveTypeAudit` -- parses C function signatures and checks compatibility
-  with the Lean FFI ABI (needs IO + MetaM for Prop detection)
+  with the Lean FFI ABI
 
 ## Tests
 

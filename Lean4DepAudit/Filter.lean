@@ -40,13 +40,11 @@ def initializeOnly : ConstContext → Bool :=
 def externsOnly : ConstContext → Bool :=
   fun ctx => match ctx.finding with | some (Finding.extern_ _) => true | _ => false
 
-/-- Filter: only findings reachable through runtime code (not proof terms).
-    These are the externs/axioms your compiled binary actually depends on. -/
+/-- Filter: only findings reachable through runtime code (not proof terms). -/
 def runtimeOnly : ConstContext → Bool :=
   fun ctx => !ctx.inProofTerm
 
-/-- The three axioms that every nontrivial Lean program uses.
-    Not a trust concern — they're part of the foundation. -/
+/-- The three standard axioms: `propext`, `Quot.sound`, `Classical.choice`. -/
 def isStandardAxiom (name : Name) : Bool :=
   name == `propext || name == `Quot.sound || name == `Classical.choice
 

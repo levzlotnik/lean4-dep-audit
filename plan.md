@@ -29,11 +29,11 @@ Lean's `#print axioms` only reports axioms and only at the command level. We wan
 
 ### Two-Pass Auditor (working)
 
-The auditor uses a two-pass design: a fast pure first pass for classification + DAG construction, and an instant pure second pass for interactive drill-down queries.
+The auditor uses a two-pass design: a first pass for classification + DAG construction, and a second pass for drill-down queries.
 
 #### Pass 1: Classification + DAG (`auditConst`)
 
-**Signature:** `Environment → AuditConfig → Name → AuditResult → AuditResult` (pure, no MetaM)
+**Signature:** `Environment → AuditConfig → Name → AuditResult → AuditResult`
 
 Walks every `Expr` reachable from the root constant, following `.const` references into the `Environment`. Each constant body is traversed exactly once (guarded by `visited : NameHashSet`). Accepts a `prior : AuditResult` accumulator for incremental/bulk audits. At each constant:
 
@@ -62,7 +62,7 @@ Algorithm:
 2. `immediateDeps(from_)` — `Expr.foldConsts` over `from_`'s type + value to get its direct constant references
 3. Intersect: which of `from_`'s direct deps are in the ancestor set?
 
-This is O(ancestors + children) per query — effectively instant.
+This is O(ancestors + children) per query.
 
 #### Opaque Sub-Classification
 
@@ -272,21 +272,13 @@ Build targets: `lake build Lean4DepAudit` (library), `lake build Tests` (run 38 
 
 ## Design Decisions & Lessons Learned
 
-### Why pure Environment, not MetaM?
-
-We initially moved the first pass into `MetaM` with `withLocalDecl` at binder positions (`lam`, `forallE`, `letE`) so that `inferType` would work inside binder bodies. This caused heartbeat timeouts: 4300 constants × deep binder nesting = hundreds of thousands of `whnf` calls for zero benefit, since we never call `inferType` in the first pass.
-
-`withLocalDecl` does real work — creates fresh fvars, extends the `LocalContext`, type-checks the binder type via `whnf` — and none of that is needed when you're just scanning for `.const` nodes, which are global references that never contain bound variables.
-
-**Rule:** only use `MetaM` when you actually need the local context (e.g., `inferType`, `isDefEq`). For finding `.const` nodes, a pure `Environment`-based walk is sufficient and much faster.
-
 ### Why two passes?
 
 The original single-pass design stored an `ExprPath` (full structural path from root) per finding encounter. This caused path explosion: extern constants like `Array.size` appear 1.5 million times across all 4300 constant bodies. Storing a path per encounter blew up both memory and time.
 
-The key insight: the developer doesn't need all paths up front. They need (1) a summary of what's interesting and (2) a way to drill into specific findings on demand.
+The developer doesn't need all paths up front. They need (1) a summary of what's interesting and (2) a way to drill into specific findings on demand.
 
-**Pass 1** is optimized for speed: no paths, just flags and a DAG. **Pass 2** is optimized for precision: answers "which of X's deps lead to Y?" instantly via set intersection on the pre-computed DAG.
+**Pass 1** records flags and a DAG — no paths. **Pass 2** answers "which of X's deps lead to Y?" via set intersection on the pre-computed DAG.
 
 ### Why reverseDeps (child → {parents}) not forward deps?
 
@@ -306,7 +298,7 @@ The `#audit` command runs at elaboration time. When a custom config is provided 
 
 The standard config without `with` also runs at elaboration time but avoids `evalExpr`. Performance is still limited by the fact that the whole pipeline runs during elaboration.
 
-**The `#audit` command is best for localized hints in Lean scripts.** For bulk audits and full-speed execution, the planned CLI executable (`lake exe audit`) will run everything as compiled native code — no interpreter overhead.
+The `#audit` command works for localized checks in Lean scripts. For bulk audits, the CLI executable (`lake exe audit`) runs as compiled native code.
 
 ### Standard config design
 
@@ -431,7 +423,7 @@ lake exe audit myMain --import MyModule --report 'externs & !stdlib' --descend s
 - Operators: `&` (and), `|` (or), `!` (not), `()` (grouping)
 - Examples: `'externs & runtime'`, `'nonStdAxioms | nonStdExterns & !stdlib'`, `'!(axioms | opaques)'`
 
-Hand-rolled recursive descent parser (~160 lines). Produces compiled `ConstContext → Bool` / `DescendContext → Bool` closures at startup — no interpreter overhead at audit time.
+Hand-rolled recursive descent parser (~160 lines). Produces `ConstContext → Bool` / `DescendContext → Bool` closures at parse time.
 
 Named presets via `--config`: `standard` (default), `full`, `runtimeOnly`, `runtimeExterns`, `axiomsOnly`. Individual `--report`/`--recurse`/`--descend` flags override the preset's corresponding predicate.
 
@@ -450,7 +442,7 @@ Done. Each `FindingInfo` now stores the constant's declared (polymorphic) type a
 
 Output now shows types inline: `testExternFn [extern "test_c_fn"] [runtime] : Nat → Nat`. This tells you the API surface of each finding without requiring instantiation tracking (which would explode for polymorphic constants like `id` or `Array.size`).
 
-**Design decision:** We store the declared type (`ci.type`), not instantiated types. Collecting all instantiations was rejected because a single polymorphic constant can be instantiated thousands of times (e.g., `id` at every type). The declared type is sufficient — it shows what the extern/axiom/opaque promises.
+**Design decision:** We store the declared type (`ci.type`), not instantiated types. A single polymorphic constant can be instantiated thousands of times (e.g., `id` at every type), so collecting all instantiations isn't practical.
 
 **Files changed:** `Types.lean` (new fields), `Traverse.lean` (record `ci.type` + pretty-print in `resolveLocations`), `CLI.lean` + `Command.lean` (formatters display type), `Tests/Helpers.lean` (new `assertHasType`/`assertTypeStrContains`), `Tests/TestTypeInfo.lean` (5 new tests).
 
@@ -528,7 +520,7 @@ provenance: UNRESOLVED
 
 **Files:** `Lean4DepAudit/ExternSourceProvenance.lean` (new, 248 lines), `Types.lean` (updated), `CLI.lean` (updated), `Lean4DepAudit.lean` (updated import).
 
-**Design note:** The original plan had 6 variants (`toolchainModule`, `projectLib`, `systemLib`). The implementation simplified to 4 variants focused on the core audit question: "can I trace this to readable source code?" The `tracedToSource` variant records the full chain (`.c`, `.o`, `.a`), while the toolchain variants are known-trusted. Anything else is `unresolved` = sus. The `toolchainModule` distinction (libInit.a vs libleanrt.a) was dropped because both are toolchain-trusted. `systemLib` (from `moreLinkArgs`) was deferred — we'd need to parse lakefile link flags, which we explicitly decided not to do.
+**Design note:** The original plan had 6 variants (`toolchainModule`, `projectLib`, `systemLib`). The implementation simplified to 4 variants focused on the core audit question: "can I trace this to readable source code?" The `tracedToSource` variant records the full chain (`.c`, `.o`, `.a`), while the toolchain variants are known-trusted. Anything else is `unresolved` = sus. The `toolchainModule` distinction (libInit.a vs libleanrt.a) was dropped because both are toolchain-trusted. `systemLib` (from `moreLinkArgs`) was deferred — we'd need to parse lakefile link flags, which we're not doing.
 
 #### 3d. Tests for symbol tracing ✅
 

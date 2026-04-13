@@ -8,8 +8,8 @@
   3. Maps the Lean declared type to expected C types via the Lean FFI ABI
   4. Compares — mismatch = critical audit finding
 
-  Design philosophy: if we can't parse it cleanly, THAT IS the finding.
-  Well-formed FFI C uses simple, explicit types. Obfuscation is suspicious.
+  If the parser can't handle a signature, it reports `unparseable` rather than
+  guessing — the user can then inspect the C source manually.
 -/
 import Lean
 import Lean4DepAudit.Types

@@ -20,7 +20,7 @@ structure TraversalState where
 
 /-- Record reverse dependency edges for a constant: for each `.const` in its
     type and value, add `child → parent` to the reverse dep graph.
-    Uses `Expr.foldConsts` — a fast built-in scan. -/
+    Uses `Expr.foldConsts` to collect constant references. -/
 def recordDepsFor (parent : Name) (ci : ConstantInfo) (s : AuditResult) : AuditResult :=
   let children : NameHashSet :=
     ci.type.foldConsts {} fun name (set : NameHashSet) => set.insert name
@@ -33,8 +33,7 @@ def recordDepsFor (parent : Name) (ci : ConstantInfo) (s : AuditResult) : AuditR
       | none     => ({} : NameHashSet).insert parent
     { s with reverseDeps := s.reverseDeps.insert child parents }
 
-/-- First pass: walk an `Expr`, classify constants, build dep graph.
-    Pure function — no MetaM, no paths, no local context. -/
+/-- First pass: walk an `Expr`, classify constants, build dep graph. -/
 partial def auditExpr (env : Environment) (config : AuditConfig) (e : Expr)
     (ts : TraversalState) (s : AuditResult) : AuditResult :=
   go e ts s
@@ -123,7 +122,7 @@ where
     | .proj _ _ expr => descend expr .proj ts s
     | .bvar _ | .fvar _ | .mvar _ | .sort _ | .lit _ => s
 
-/-- Run the first audit pass on a named constant. Pure function.
+/-- Run the first audit pass on a named constant.
     Pass a `prior` result to accumulate incrementally (e.g. for bulk audits). -/
 def auditConst (env : Environment) (config : AuditConfig) (name : Name)
     (prior : AuditResult := {}) : AuditResult :=
@@ -203,7 +202,7 @@ def immediateDeps (env : Environment) (name : Name) : NameHashSet :=
   | none => {}
 
 /-- Drill down one level: which direct dependencies of `from_` transitively reach `target`?
-    Pure function — intersects immediate deps with the ancestor set of `target`. -/
+    Intersects immediate deps with the ancestor set of `target`. -/
 def drillDown (env : Environment) (from_ target : Name) (result : AuditResult)
     : DrillResult :=
   let ancestors := findAncestors result target

@@ -28,20 +28,15 @@ Read `plan.md` for the full design document. Key points below.
 
 ### Two-Pass Design
 
-**Pass 1 (`auditConst`):** Pure function `Environment → AuditConfig → Name → AuditResult`. Walks all reachable constants, classifies findings (axiom/opaque/extern), records reachability flags, builds the reverse dependency DAG. No MetaM, no paths, no IO.
+**Pass 1 (`auditConst`):** `Environment → AuditConfig → Name → AuditResult`. Walks all reachable constants, classifies findings (axiom/opaque/extern), records reachability flags, builds the reverse dependency DAG.
 
-**Pass 2 (`drillDown`):** Pure function `Environment → Name → Name → AuditResult → DrillResult`. Answers "which direct deps of X lead to target Y?" via set intersection on the pre-computed DAG. Instant.
+**Pass 2 (`drillDown`):** `Environment → Name → Name → AuditResult → DrillResult`. Answers "which direct deps of X lead to target Y?" via set intersection on the pre-computed DAG.
 
-**`resolveLocations`:** `AuditResult → MetaM AuditResult`. Optional post-processing that fills in source locations and pretty-prints declared types. The only part that needs MetaM.
+**`resolveLocations`:** `AuditResult → MetaM AuditResult`. Optional post-processing that fills in source locations and pretty-prints declared types.
 
 **`resolveProvenance`:** `AuditResult → SearchPath → IO AuditResult`. Post-processing that traces each `@[extern]` symbol back to its C source through Lake's build trace files. Shells out to `nm`, reads `.trace` JSON, scans `lean.h`. Classifies as `tracedToSource` (full chain to `.c`), `toolchainRuntime` (in `libleanrt.a`), `toolchainHeader` (`static inline` in `lean.h`), or `unresolved` (sus).
 
 ### Critical Constraints
-
-**Do not add MetaM to the first pass.** Every attempt caused severe performance problems:
-- `withLocalDecl` triggers `whnf` at every binder, causing heartbeat timeouts on 4300 constants
-- `StateT AuditResult MetaM` copies the entire result struct on every `modify` call
-- The first pass only scans for `.const` nodes, which are global references that never contain bound variables — `MetaM`'s local context management is pure overhead here
 
 **Do not store paths in the first pass.** Extern constants like `Array.size` appear 1.5 million times across all constant bodies. Storing an `ExprPath` per encounter causes memory/time explosion. The first pass records only flags and encounter counts.
 

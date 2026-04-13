@@ -7,9 +7,8 @@ open Lean
 namespace Lean4DepAudit
 
 /-- Audit monad: threads `AuditResult` state through `MetaM`.
-    The pure core functions (`auditConst`, `drillDown`) don't need this —
-    `AuditM` is for the outer orchestration layer that sequences
-    multiple audits, resolves locations, and runs drill queries. -/
+    Used by the orchestration layer that sequences multiple audits,
+    resolves locations, and runs drill queries. -/
 abbrev AuditM := StateT AuditResult MetaM
 
 /-- Audit a single constant, accumulating into the shared state. -/
