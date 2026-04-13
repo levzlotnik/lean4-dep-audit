@@ -176,7 +176,7 @@ Five demos on `myMain : IO Unit` (reads stdin, prints greeting):
 4. **Drill-down:** "Why does myMain depend on propext?" → IO.println, String.Slice.instToString, instAppendString, String.trimAscii
 5. **Multiple constants:** `(myMain, main)` — shared AuditResult, 25 visited, 0 findings
 
-### Test Suite (34 tests, all passing)
+### Test Suite (38 tests, all passing)
 
 Fixtures in `TestFixtures/` (separate `lean_lib`, compiled independently), tests in `Tests/` that import fixtures + auditor. `lake build Tests` = run all tests. Assertion failure = build error.
 
@@ -194,7 +194,7 @@ Fixtures in `TestFixtures/` (separate `lean_lib`, compiled independently), tests
 - `lakefile.lean` — `extern_lib` target compiling `c/ffi.c` → `libffi.a`, with `precompileModules := true`
 - Build produces `libffi.a` with verified symbols (`nm` confirms `test_ffi_add`, `test_ffi_toggle`, `test_ffi_const42`)
 
-**Test files (34 `run_cmd` blocks):**
+**Test files (38 `run_cmd` blocks):**
 - `Tests/TestExtern.lean` (4 tests) — extern classification, transitive detection, dual externs, standard config, reachability flags
 - `Tests/TestAxiom.lean` (4 tests) — axiom classification, transitive detection, standard config, sorry → `sorryAx` (classified as `extern_ "lean_sorry"` since `@[extern]` takes priority)
 - `Tests/TestOpaque.lean` (3 tests) — partial def, implementedBy classification, standard config
@@ -203,9 +203,10 @@ Fixtures in `TestFixtures/` (separate `lean_lib`, compiled independently), tests
 - `Tests/TestMulti.lean` (3 tests) — shared visited dedup, disjoint trees, combined visit count ≥ individual
 - `Tests/TestFfi.lean` (7 tests) — **real linked FFI**: extern classification with correct symbol names, transitive detection through callers, multi-extern detection, drill-down through FFI dependency chains, standard config flags non-standard FFI externs, runtime reachability, thunk-pattern extern
 - `Tests/TestTypeInfo.lean` (5 tests) — declared type recording: type field non-default, typeStr populated by resolveLocations, extern/axiom/opaque type strings contain expected fragments
+- `Tests/TestProvenance.lean` (4 tests) — **symbol provenance resolution**: `tracedToSource` for FFI fixture (verifies `cFile` contains `ffi.c`), `toolchainRuntime` for stdlib externs in `libleanrt.a`, `toolchainHeader` for `static inline` in `lean.h`, `unresolved` for unlinked test fixture externs
 
 **Test infrastructure:**
-- `Tests/Helpers.lean` — assertion helpers (`assertHasFinding`, `assertFindingIs`, `assertReachability`, `assertDrillContains`, etc.), `runAudit`/`runAuditMulti` wrappers, `runTest` lifts `MetaM` into `CommandElabM`
+- `Tests/Helpers.lean` — assertion helpers (`assertHasFinding`, `assertFindingIs`, `assertReachability`, `assertDrillContains`, `assertTracedToSource`, `assertToolchainRuntime`, `assertToolchainHeader`, `assertUnresolved`, etc.), `runAudit`/`runAuditMulti`/`runAuditWithProvenance` wrappers, `runTest` lifts `MetaM` into `CommandElabM`
 
 **Key finding:** `sorryAx` is classified as `extern_ "lean_sorry"` (not `axiom_`) because `sorryAx` has `@[extern "lean_sorry"]` in the Lean runtime, and the auditor's classification correctly gives extern priority over axiom.
 
@@ -258,13 +259,14 @@ MyLeanTermAuditor/
     TestDrillDown.lean        # drill-down tests (4)
     TestMulti.lean            # multi-constant tests (3)
     TestFfi.lean              # FFI tests (7) — real linked native code
+    TestProvenance.lean       # provenance tests (4) — tracedToSource, toolchainRuntime, toolchainHeader, unresolved
   Main.lean                   # CLI entry point (thin wrapper for CLI.run)
   Demo.lean                   # demos: standard, runtime externs, full, drill, multi-constant
 ```
 
 Dependency chain: `Types ← Classify ← Traverse ← Monad ← Command`, `Types ← StackTrace ← Filter`, `Types ← ExternSourceProvenance`, `Filter + Traverse + Monad + ExternSourceProvenance ← CLI`.
 
-Build targets: `lake build MyLeanTermAuditor` (library), `lake build Tests` (run 34 tests), `lake build audit` or `lake build` (CLI executable), `lake build demo` (elaboration-time demos).
+Build targets: `lake build MyLeanTermAuditor` (library), `lake build Tests` (run 38 tests), `lake build audit` or `lake build` (CLI executable), `lake build demo` (elaboration-time demos).
 
 ---
 
@@ -452,7 +454,7 @@ Output now shows types inline: `testExternFn [extern "test_c_fn"] [runtime] : Na
 
 **Files changed:** `Types.lean` (new fields), `Traverse.lean` (record `ci.type` + pretty-print in `resolveLocations`), `CLI.lean` + `Command.lean` (formatters display type), `Tests/Helpers.lean` (new `assertHasType`/`assertTypeStrContains`), `Tests/TestTypeInfo.lean` (5 new tests).
 
-**Tests:** 34 unit tests pass (29 original + 5 new type-info tests), 26 CLI integration tests pass.
+**Tests:** 38 unit tests pass (29 original + 5 type-info + 4 provenance tests), 31 CLI integration tests pass (26 original + 5 provenance).
 
 ### 3. Extern symbol tracing + package-level test infrastructure
 
@@ -522,21 +524,34 @@ provenance: toolchain-header
 provenance: UNRESOLVED
 ```
 
-**CLI integration:** `resolveProvenance` runs automatically in `CLI.run` after `resolveLocations`. All 34 unit tests + 26 CLI integration tests pass.
+**CLI integration:** `resolveProvenance` runs automatically in `CLI.run` after `resolveLocations`. All 38 unit tests + 31 CLI integration tests pass.
 
 **Files:** `MyLeanTermAuditor/ExternSourceProvenance.lean` (new, 248 lines), `Types.lean` (updated), `CLI.lean` (updated), `MyLeanTermAuditor.lean` (updated import).
 
 **Design note:** The original plan had 6 variants (`toolchainModule`, `projectLib`, `systemLib`). The implementation simplified to 4 variants focused on the core audit question: "can I trace this to readable source code?" The `tracedToSource` variant records the full chain (`.c`, `.o`, `.a`), while the toolchain variants are known-trusted. Anything else is `unresolved` = sus. The `toolchainModule` distinction (libInit.a vs libleanrt.a) was dropped because both are toolchain-trusted. `systemLib` (from `moreLinkArgs`) was deferred — we'd need to parse lakefile link flags, which we explicitly decided not to do.
 
-#### 3d. Tests for symbol tracing
+#### 3d. Tests for symbol tracing ✅
 
-Add tests to `Tests/` that:
-- Audit an FFI fixture constant and verify its extern symbol resolves to `tracedToSource` with the correct `.c` file path
-- Audit a stdlib extern (e.g. `Array.push`) and verify it resolves to `toolchainRuntime`
-- Audit a header-only extern (e.g. `Nat.ble`) and verify it resolves to `toolchainHeader`
-- Audit a user `@[extern]` with no backing native code (test fixture) and verify it's classified as `unresolved`
-- Test the full chain: `cFile` in `tracedToSource` actually ends with the expected filename
-- Add CLI integration tests that check provenance substrings in YAML output and provenance fields in JSON output
+Done. 4 unit tests in `Tests/TestProvenance.lean` + 5 CLI tests in `TestCLI.lean`, covering all 4 active `SymbolProvenance` constructors.
+
+**Unit tests (`Tests/TestProvenance.lean`):**
+- `tracedToSource`: audit `FfiFixture.callsFfiAdd` → `FfiFixture.ffiAdd` provenance contains `ffi.c`
+- `toolchainRuntime`: audit `String.append` → at least one extern finding with `toolchainRuntime` provenance (e.g., `ByteArray.mk` → `lean_byte_array_mk` in `libleanrt.a`)
+- `toolchainHeader`: same audit → at least one extern finding with `toolchainHeader` provenance (e.g., `UInt32.toBitVec` → `lean_uint32_to_nat`, `static inline` in `lean.h`)
+- `unresolved`: audit `TestFixtures.Extern.testCallsExtern` → `testExternFn` with symbol `test_c_fn` has no backing native code
+
+**CLI tests (`TestCLI.lean`):**
+- YAML: `provenance: UNRESOLVED` for user extern, `provenance: toolchain-runtime` and `provenance: toolchain-header` for stdlib externs
+- JSON: user extern has `unresolved` provenance, all stdlib externs have provenance populated
+
+**Test helpers added to `Tests/Helpers.lean`:**
+- `runAuditWithProvenance` — runs `auditConst` + `resolveLocations` + `resolveProvenance` (needs IO for `nm`/trace scanning)
+- `assertProvenanceMatches` — generic predicate-based provenance assertion
+- `assertTracedToSource`, `assertToolchainRuntime`, `assertToolchainHeader`, `assertUnresolved` — constructor-specific assertions
+
+**`binaryOnly` edge case:** Shelved. See `extern-provenance-findings.md` for the full investigation. The `binaryOnly` constructor is commented out with TODO placeholders across `Types.lean`, `ExternSourceProvenance.lean`, and `CLI.lean`. Key finding: Lean FFI always requires a C wrapper at the boundary (for `lean_object*` conventions), so a Lake-built `extern_lib` always has trace files. The `moreLinkObjs` + `input_file` pattern for pre-built `.a` files doesn't compose with `precompileModules := true` (per-module dynlibs don't include `moreLinkObjs`). A commented-out `harvestLinkedLibraries` function in `ExternSourceProvenance.lean` contains the trace-scanning logic for when this is resolved.
+
+**Tests:** 38 unit tests pass, 31 CLI integration tests pass.
 
 ---
 
@@ -556,7 +571,7 @@ Add tests to `Tests/` that:
 - **`test-packages/ffi-fixture/FfiFixture/Basic.lean`** — @[extern] bindings + callers
 - **`TestFixtures/`** — in-project test fixture constants (Extern, Axiom, Opaque, PureStdlib, Chain)
 - **`Tests/Helpers.lean`** — assertion helpers, `runTest`, `runAudit` wrappers
-- **`Tests/Test*.lean`** — 34 tests across 8 test files (including TestFfi.lean for real FFI, TestTypeInfo.lean for declared types)
+- **`Tests/Test*.lean`** — 38 tests across 9 test files (including TestFfi.lean for real FFI, TestTypeInfo.lean for declared types, TestProvenance.lean for symbol provenance)
 - **`Main.lean`** — CLI entry point (`def main := CLI.run`)
 - **`Demo.lean`** — five demos: standard, runtime externs, full, drill, multi-constant
 - **`opencode.json`** — MCP server config (lean-lsp-mcp)

@@ -213,7 +213,18 @@ def substrTests : Array SubstrTest := #[
     args := #["UserProject.usesAxiom", "--import", "UserProject",
               "--config", "full", "--report", "axioms"]
     expectStdout := #["UserProject.userAxiom"]
-    rejectStdout := #["kind: extern"] }
+    rejectStdout := #["kind: extern"] },
+
+  -- Provenance YAML tests
+  { name := "yaml: provenance UNRESOLVED for user extern"
+    args := #["UserProject.callsExtern", "--import", "UserProject"]
+    expectStdout := #["provenance: UNRESOLVED"] },
+  { name := "yaml: provenance toolchain-runtime for stdlib extern"
+    args := #["String.append", "--import", "Init", "--config", "full"]
+    expectStdout := #["provenance: toolchain-runtime"] },
+  { name := "yaml: provenance toolchain-header for header-only extern"
+    args := #["String.append", "--import", "Init", "--config", "full"]
+    expectStdout := #["provenance: toolchain-header"] }
 ]
 
 def jsonTests : Array JsonTest := #[
@@ -324,7 +335,33 @@ def jsonTests : Array JsonTest := #[
     args := #["UserProject.callsExtern", "--import", "UserProject"]
     validate := fun r =>
       if r.visited > 0 then .ok ()
-      else .error "expected visited > 0" }
+      else .error "expected visited > 0" },
+
+  -- Provenance: user extern is unresolved
+  { name := "json: provenance unresolved for user extern"
+    args := #["UserProject.callsExtern", "--import", "UserProject"]
+    validate := fun r =>
+      match r.findings.find? (·.name == `UserProject.userExternFn) with
+      | some fi =>
+        match fi.provenance? with
+        | some .unresolved => .ok ()
+        | some other => .error s!"expected unresolved provenance, got {repr other}"
+        | none => .error "expected provenance to be set, got none"
+      | none => .error "finding not present" },
+
+  -- Provenance: stdlib externs have toolchainRuntime or toolchainHeader
+  { name := "json: provenance populated for stdlib externs"
+    args := #["String.append", "--import", "Init", "--config", "full"]
+    validate := fun r =>
+      let externFindings := r.findings.filter fun fi =>
+        match fi.finding with | .extern_ _ => true | _ => false
+      if externFindings.isEmpty then .error "expected some extern findings"
+      else
+        -- Every extern finding should have provenance set
+        let allHaveProv := externFindings.all fun fi => fi.provenance?.isSome
+        if !allHaveProv then .error "some extern findings have no provenance"
+        else .ok ()
+  }
 ]
 
 -- ============================================================================

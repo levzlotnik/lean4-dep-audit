@@ -2,8 +2,8 @@
 
 ## Developer Commands
 - Build library only: `lake build MyLeanTermAuditor`
-- Run tests (34 tests): `lake build Tests`
-- Run CLI integration tests (26 tests): `lake build audit && lake build test_cli && lake exe test_cli`
+- Run tests (38 tests): `lake build Tests`
+- Run CLI integration tests (31 tests): `lake build audit && lake build test_cli && lake exe test_cli`
 - Build CLI executable: `lake build audit` (or `lake build`, it's the default target)
 - Build demos: `lake build demo`
 - Run CLI: `lake exe audit <constant> --import <module> [--config standard|full|...] [--report <dsl>] [--drill <name>]`
@@ -11,7 +11,7 @@
 
 ## Verification
 - **Primary**: Check for Lean compiler diagnostics (errors/warnings) via LSP.
-- **Test Suite**: Run `lake build Tests` — 34 `run_cmd` tests across 8 files. Build failure = test failure.
+- **Test Suite**: Run `lake build Tests` — 38 `run_cmd` tests across 9 files. Build failure = test failure.
 - **Logic Testing**: Add `#eval` blocks in `.lean` files (e.g., `Main.lean`) to verify auditor results during elaboration.
 - **Build Check**: Run `lake build MyLeanTermAuditor` for fast iteration (skips Main.lean's expensive `#eval` blocks). Run `lake build` for full verification.
 - **Profiling**: Add `set_option profiler true` before `#eval` blocks to see interpretation vs elaboration time.

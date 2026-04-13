@@ -85,6 +85,56 @@ def assertTypeStrContains (result : AuditResult) (name : Name) (substr : String)
       throwError "{ctx}Expected typeStr for '{name}' to contain \"{substr}\", got \"{fi.typeStr}\""
   | none => throwError "{ctx}Expected '{name}' in findings, but it was not found"
 
+/-- Run audit on a constant with provenance resolution. Needs IO for nm/trace scanning. -/
+def runAuditWithProvenance (name : Name) (config : AuditConfig := AuditConfig.default)
+    : MetaM AuditResult := do
+  let env ← getEnv
+  let result := auditConst env config name
+  let result ← resolveLocations result
+  let searchPath ← Lean.searchPathRef.get
+  let result ← resolveProvenance result searchPath
+  return result
+
+/-- Assert that a finding's provenance matches a predicate. -/
+def assertProvenanceMatches (result : AuditResult) (name : Name)
+    (pred : SymbolProvenance → Bool) (desc : String) (ctx : String := "") : MetaM Unit := do
+  match result.findings.find? name with
+  | some fi =>
+    match fi.provenance? with
+    | some prov =>
+      unless pred prov do
+        throwError "{ctx}Expected provenance for '{name}' to be {desc}, got {repr prov}"
+    | none => throwError "{ctx}Expected provenance for '{name}', but provenance? is none"
+  | none => throwError "{ctx}Expected '{name}' in findings, but it was not found"
+
+/-- Assert that a finding's provenance is `tracedToSource` with cFile containing a substring. -/
+def assertTracedToSource (result : AuditResult) (name : Name) (cFileSubstr : String)
+    (ctx : String := "") : MetaM Unit :=
+  assertProvenanceMatches result name (fun
+    | .tracedToSource c _ _ => c.hasSubstr cFileSubstr
+    | _ => false) s!"tracedToSource containing \"{cFileSubstr}\"" ctx
+
+/-- Assert that a finding's provenance is `toolchainRuntime`. -/
+def assertToolchainRuntime (result : AuditResult) (name : Name)
+    (ctx : String := "") : MetaM Unit :=
+  assertProvenanceMatches result name (fun
+    | .toolchainRuntime _ => true
+    | _ => false) "toolchainRuntime" ctx
+
+/-- Assert that a finding's provenance is `toolchainHeader`. -/
+def assertToolchainHeader (result : AuditResult) (name : Name)
+    (ctx : String := "") : MetaM Unit :=
+  assertProvenanceMatches result name (fun
+    | .toolchainHeader => true
+    | _ => false) "toolchainHeader" ctx
+
+/-- Assert that a finding's provenance is `unresolved`. -/
+def assertUnresolved (result : AuditResult) (name : Name)
+    (ctx : String := "") : MetaM Unit :=
+  assertProvenanceMatches result name (fun
+    | .unresolved => true
+    | _ => false) "unresolved" ctx
+
 /-- Lift a MetaM test body into a `run_cmd`-compatible CommandElabM. -/
 def runTest (name : String) (body : MetaM Unit) : CommandElabM Unit :=
   liftTermElabM <| Meta.MetaM.run' do
