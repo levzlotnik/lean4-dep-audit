@@ -2,3 +2,4 @@
 **/.lake/*
 .direnv/
 .opencode/
+opencode.json
