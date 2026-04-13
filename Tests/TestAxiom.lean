@@ -1,6 +1,6 @@
 import Tests.Helpers
 
-open Lean MyLeanTermAuditor
+open Lean Lean4DepAudit
 
 -- Test 1: Custom axiom found through caller (classified + transitively reached)
 run_cmd runTest "Axiom: testUsesAxiom finds testAxiom as axiom_" do

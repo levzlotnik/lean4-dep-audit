@@ -1,4 +1,4 @@
-# MyLeanTermAuditor — Plan
+# lean4-dep-audit — Plan
 
 ## Goal
 
@@ -213,7 +213,7 @@ Fixtures in `TestFixtures/` (separate `lean_lib`, compiled independently), tests
 ### Project Structure
 
 ```
-MyLeanTermAuditor/
+Lean4DepAudit/
   lakefile.lean               # Lake build config (converted from TOML for extern_lib support)
   lean-toolchain              # leanprover/lean4:v4.29.0
   flake.nix                   # nix dev shell with elan
@@ -221,8 +221,8 @@ MyLeanTermAuditor/
   opencode.json               # lean-lsp-mcp config
   .opencode/skills/lean4/     # lean4-skills pack
   plan.md                     # this file
-  MyLeanTermAuditor.lean      # root import (re-exports all modules)
-  MyLeanTermAuditor/
+  Lean4DepAudit.lean      # root import (re-exports all modules)
+  Lean4DepAudit/
     Basic.lean                # placeholder (from lake init)
     Types.lean                # OpaqueKind, Finding, FindingInfo, AuditResult, DrillResult, AuditConfig
     Classify.lean             # getExternSymbol?, classifyOpaqueKind, classifyConst
@@ -266,7 +266,7 @@ MyLeanTermAuditor/
 
 Dependency chain: `Types ← Classify ← Traverse ← Monad ← Command`, `Types ← StackTrace ← Filter`, `Types ← ExternSourceProvenance`, `Filter + Traverse + Monad + ExternSourceProvenance ← CLI`.
 
-Build targets: `lake build MyLeanTermAuditor` (library), `lake build Tests` (run 38 tests), `lake build audit` or `lake build` (CLI executable), `lake build demo` (elaboration-time demos).
+Build targets: `lake build Lean4DepAudit` (library), `lake build Tests` (run 38 tests), `lake build audit` or `lake build` (CLI executable), `lake build demo` (elaboration-time demos).
 
 ---
 
@@ -436,7 +436,7 @@ Hand-rolled recursive descent parser (~160 lines). Produces compiled `ConstConte
 Named presets via `--config`: `standard` (default), `full`, `runtimeOnly`, `runtimeExterns`, `axiomsOnly`. Individual `--report`/`--recurse`/`--descend` flags override the preset's corresponding predicate.
 
 **Files:**
-- `MyLeanTermAuditor/CLI.lean` — tokenizer, recursive descent parser, arg parser, formatters, `run` entry point
+- `Lean4DepAudit/CLI.lean` — tokenizer, recursive descent parser, arg parser, formatters, `run` entry point
 - `Main.lean` — thin wrapper: `def main := CLI.run`
 - `Demo.lean` — former `Main.lean` demos (now a separate `lake exe demo` target)
 
@@ -526,7 +526,7 @@ provenance: UNRESOLVED
 
 **CLI integration:** `resolveProvenance` runs automatically in `CLI.run` after `resolveLocations`. All 38 unit tests + 31 CLI integration tests pass.
 
-**Files:** `MyLeanTermAuditor/ExternSourceProvenance.lean` (new, 248 lines), `Types.lean` (updated), `CLI.lean` (updated), `MyLeanTermAuditor.lean` (updated import).
+**Files:** `Lean4DepAudit/ExternSourceProvenance.lean` (new, 248 lines), `Types.lean` (updated), `CLI.lean` (updated), `Lean4DepAudit.lean` (updated import).
 
 **Design note:** The original plan had 6 variants (`toolchainModule`, `projectLib`, `systemLib`). The implementation simplified to 4 variants focused on the core audit question: "can I trace this to readable source code?" The `tracedToSource` variant records the full chain (`.c`, `.o`, `.a`), while the toolchain variants are known-trusted. Anything else is `unresolved` = sus. The `toolchainModule` distinction (libInit.a vs libleanrt.a) was dropped because both are toolchain-trusted. `systemLib` (from `moreLinkArgs`) was deferred — we'd need to parse lakefile link flags, which we explicitly decided not to do.
 
@@ -557,15 +557,15 @@ Done. 4 unit tests in `Tests/TestProvenance.lean` + 5 CLI tests in `TestCLI.lean
 
 ## Key Files to Read
 
-- **`MyLeanTermAuditor/Types.lean`** — all data types: OpaqueKind, Finding, FindingInfo, AuditResult, DrillResult, AuditConfig
-- **`MyLeanTermAuditor/Classify.lean`** — constant classification (axiom/opaque sub-kind/extern)
-- **`MyLeanTermAuditor/Traverse.lean`** — pass 1 (auditConst), pass 2 (drillDown), resolveLocations
-- **`MyLeanTermAuditor/Monad.lean`** — AuditM monad, monadic wrappers
-- **`MyLeanTermAuditor/Command.lean`** — `#audit` command elaborator
-- **`MyLeanTermAuditor/Filter.lean`** — composable filter/descent predicates, stdlib detection, convenience configs
-- **`MyLeanTermAuditor/ExternSourceProvenance.lean`** — IO-based extern symbol → C source tracing via Lake trace files (`nm`, `.trace` JSON, `lean.h` scanning)
-- **`MyLeanTermAuditor/CLI.lean`** — CLI: filter DSL parser, arg parser, formatters, `run` entry point
-- **`MyLeanTermAuditor/StackTrace.lean`** — compile-time stack trace rendering
+- **`Lean4DepAudit/Types.lean`** — all data types: OpaqueKind, Finding, FindingInfo, AuditResult, DrillResult, AuditConfig
+- **`Lean4DepAudit/Classify.lean`** — constant classification (axiom/opaque sub-kind/extern)
+- **`Lean4DepAudit/Traverse.lean`** — pass 1 (auditConst), pass 2 (drillDown), resolveLocations
+- **`Lean4DepAudit/Monad.lean`** — AuditM monad, monadic wrappers
+- **`Lean4DepAudit/Command.lean`** — `#audit` command elaborator
+- **`Lean4DepAudit/Filter.lean`** — composable filter/descent predicates, stdlib detection, convenience configs
+- **`Lean4DepAudit/ExternSourceProvenance.lean`** — IO-based extern symbol → C source tracing via Lake trace files (`nm`, `.trace` JSON, `lean.h` scanning)
+- **`Lean4DepAudit/CLI.lean`** — CLI: filter DSL parser, arg parser, formatters, `run` entry point
+- **`Lean4DepAudit/StackTrace.lean`** — compile-time stack trace rendering
 - **`test-packages/ffi-fixture/`** — real Lake package with C FFI (extern_lib, libffi.a)
 - **`test-packages/ffi-fixture/c/ffi.c`** — C implementations for test extern symbols
 - **`test-packages/ffi-fixture/FfiFixture/Basic.lean`** — @[extern] bindings + callers

@@ -1,10 +1,10 @@
 import Lean
-import MyLeanTermAuditor.Types
-import MyLeanTermAuditor.Traverse
+import Lean4DepAudit.Types
+import Lean4DepAudit.Traverse
 
 open Lean
 
-namespace MyLeanTermAuditor
+namespace Lean4DepAudit
 
 /-- Audit monad: threads `AuditResult` state through `MetaM`.
     The pure core functions (`auditConst`, `drillDown`) don't need this —
@@ -43,4 +43,4 @@ def AuditM.run' (m : AuditM α) : MetaM (α × AuditResult) :=
 def AuditM.exec (m : AuditM Unit) : MetaM AuditResult :=
   return (← StateT.run m {}).2
 
-end MyLeanTermAuditor
+end Lean4DepAudit

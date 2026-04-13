@@ -1,10 +1,10 @@
 import Lean
-import MyLeanTermAuditor.Types
-import MyLeanTermAuditor.Classify
+import Lean4DepAudit.Types
+import Lean4DepAudit.Classify
 
 open Lean
 
-namespace MyLeanTermAuditor
+namespace Lean4DepAudit
 
 /-- Internal traversal state threaded through the first pass. -/
 structure TraversalState where
@@ -212,4 +212,4 @@ def drillDown (env : Environment) (from_ target : Name) (result : AuditResult)
     if ancestors.contains child then child :: acc else acc
   { from_ := from_, target := target, children := relevant }
 
-end MyLeanTermAuditor
+end Lean4DepAudit

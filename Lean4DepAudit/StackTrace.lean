@@ -1,9 +1,9 @@
 import Lean
-import MyLeanTermAuditor.Types
+import Lean4DepAudit.Types
 
 open Lean
 
-namespace MyLeanTermAuditor
+namespace Lean4DepAudit
 
 /-- Whether an ExprStep enters a named constant (the "stack frames"). -/
 def ExprStep.constName? : ExprStep → Option (Name × Bool)
@@ -93,4 +93,4 @@ def DrillResult.toTraceString (dr : DrillResult) : String :=
     s!"  {dr.from_} reaches {dr.target} through {dr.children.length} direct dep(s):\n" ++
       "\n".intercalate lines
 
-end MyLeanTermAuditor
+end Lean4DepAudit

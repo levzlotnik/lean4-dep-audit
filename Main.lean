@@ -1,4 +1,4 @@
-import MyLeanTermAuditor.CLI
+import Lean4DepAudit.CLI
 
 def main (args : List String) : IO UInt32 :=
-  MyLeanTermAuditor.CLI.run args
+  Lean4DepAudit.CLI.run args

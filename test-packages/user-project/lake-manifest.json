@@ -3,7 +3,7 @@
  "packages":
  [{"type": "path",
    "scope": "",
-   "name": "MyLeanTermAuditor",
+   "name": "«lean4-dep-audit»",
    "manifestFile": "lake-manifest.json",
    "inherited": false,
    "dir": "../..",

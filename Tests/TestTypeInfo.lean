@@ -1,6 +1,6 @@
 import Tests.Helpers
 
-open Lean MyLeanTermAuditor
+open Lean Lean4DepAudit
 
 -- Test 1: Extern finding records its declared type
 run_cmd runTest "TypeInfo: extern testExternFn has type Nat → Nat" do

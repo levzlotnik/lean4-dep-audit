@@ -1,6 +1,6 @@
-import MyLeanTermAuditor
+import Lean4DepAudit
 
-open MyLeanTermAuditor
+open Lean4DepAudit
 
 /-- A sample function to audit — uses IO, string interpolation, etc. -/
 def myMain : IO Unit := do

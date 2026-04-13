@@ -1,7 +1,7 @@
 import Tests.Helpers
 import FfiFixture
 
-open Lean Elab Command Meta MyLeanTermAuditor
+open Lean Elab Command Meta Lean4DepAudit
 
 -- ============================================================================
 -- Provenance tests: verify each SymbolProvenance constructor

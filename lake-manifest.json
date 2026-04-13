@@ -8,5 +8,5 @@
    "inherited": false,
    "dir": "test-packages/ffi-fixture",
    "configFile": "lakefile.lean"}],
- "name": "MyLeanTermAuditor",
+ "name": "«lean4-dep-audit»",
  "lakeDir": ".lake"}

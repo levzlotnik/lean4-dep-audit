@@ -1,16 +1,16 @@
 -- CLI module: filter DSL parser + argument handling + formatted output.
 import Lean
-import MyLeanTermAuditor.Types
-import MyLeanTermAuditor.Filter
-import MyLeanTermAuditor.Traverse
-import MyLeanTermAuditor.Monad
-import MyLeanTermAuditor.ExternSourceProvenance
-import MyLeanTermAuditor.ExternCAudit
+import Lean4DepAudit.Types
+import Lean4DepAudit.Filter
+import Lean4DepAudit.Traverse
+import Lean4DepAudit.Monad
+import Lean4DepAudit.ExternSourceProvenance
+import Lean4DepAudit.ExternCAudit
 
 open Lean
-open MyLeanTermAuditor
+open Lean4DepAudit
 
-namespace MyLeanTermAuditor.CLI
+namespace Lean4DepAudit.CLI
 
 -- ============================================================================
 -- Filter DSL: Tokenizer
@@ -493,4 +493,4 @@ def run (args : List String) : IO UInt32 := do
   | .json => IO.println (formatJson resolved names drills)
   return 0
 
-end MyLeanTermAuditor.CLI
+end Lean4DepAudit.CLI

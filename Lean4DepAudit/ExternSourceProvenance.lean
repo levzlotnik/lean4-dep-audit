@@ -5,11 +5,11 @@
   Runs AFTER the pure audit pass and AFTER resolveLocations.
 -/
 import Lean
-import MyLeanTermAuditor.Types
+import Lean4DepAudit.Types
 
 open Lean System
 
-namespace MyLeanTermAuditor
+namespace Lean4DepAudit
 
 
 
@@ -272,4 +272,4 @@ def resolveProvenance (result : AuditResult) (searchPath : Lean.SearchPath) : IO
     | _ => pure ()  -- Skip non-extern findings
   return { result with findings }
 
-end MyLeanTermAuditor
+end Lean4DepAudit

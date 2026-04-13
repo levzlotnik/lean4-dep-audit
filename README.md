@@ -1,4 +1,4 @@
-# MyLeanTermAuditor
+# lean4-dep-audit
 
 A Lean 4 dependency auditor that goes beyond `#print axioms`. Traverses all
 transitive dependencies of a constant and classifies every axiom, opaque, and
@@ -44,7 +44,7 @@ lake exe audit myMain --import MyModule --format json
 ### In-editor `#audit` command
 
 ```lean
-import MyLeanTermAuditor
+import Lean4DepAudit
 
 #audit myMain                                          -- standard config
 #audit myMain with AuditConfig.runtimeExterns          -- runtime externs only
@@ -221,7 +221,7 @@ lake build audit && lake build test_cli && lake exe test_cli  # CLI tests
 ## Project Structure
 
 ```
-MyLeanTermAuditor/
+Lean4DepAudit/
   Types.lean                 -- Core data types + JSON serialization
   Classify.lean              -- Constant classification (axiom/opaque/extern)
   Traverse.lean              -- Pass 1 (pure traversal) + Pass 2 (drill-down)

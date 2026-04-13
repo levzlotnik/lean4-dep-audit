@@ -1,6 +1,6 @@
 import Tests.Helpers
 
-open Lean MyLeanTermAuditor
+open Lean Lean4DepAudit
 
 -- Test 1: Extern found when auditing caller (classified + transitively reached)
 run_cmd runTest "Extern: testCallsExtern finds testExternFn as extern_" do

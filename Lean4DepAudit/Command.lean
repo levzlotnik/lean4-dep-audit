@@ -1,11 +1,11 @@
 import Lean
-import MyLeanTermAuditor.Types
-import MyLeanTermAuditor.Filter
-import MyLeanTermAuditor.Monad
+import Lean4DepAudit.Types
+import Lean4DepAudit.Filter
+import Lean4DepAudit.Monad
 
 open Lean Elab Command Meta
 
-namespace MyLeanTermAuditor
+namespace Lean4DepAudit
 
 -- ============================================================================
 -- Syntax
@@ -143,4 +143,4 @@ unsafe def elabAuditSingle : CommandElab := runAudit
 @[command_elab auditMulti]
 unsafe def elabAuditMulti : CommandElab := runAudit
 
-end MyLeanTermAuditor
+end Lean4DepAudit

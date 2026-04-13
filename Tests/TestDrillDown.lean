@@ -1,6 +1,6 @@
 import Tests.Helpers
 
-open Lean MyLeanTermAuditor
+open Lean Lean4DepAudit
 
 -- Test 1: Drill from chainRoot to chainExtern finds chainMiddle
 run_cmd runTest "DrillDown: chainRoot -> chainExtern shows chainMiddle" do

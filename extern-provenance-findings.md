@@ -2,7 +2,7 @@
 
 ## Context
 
-We are building an auditor ([MyLeanTermAuditor](https://github.com/TODO)) that traces `@[extern]` symbols back to their native implementations. Given a Lean constant with `@[extern "symbol_name"]`, the auditor answers: **where does this symbol's implementation live, and can I see the source?**
+We are building an auditor ([lean4-dep-audit](https://github.com/TODO)) that traces `@[extern]` symbols back to their native implementations. Given a Lean constant with `@[extern "symbol_name"]`, the auditor answers: **where does this symbol's implementation live, and can I see the source?**
 
 This involves walking Lake's build trace files (`.trace` JSON) backward from linked artifacts to C source. During implementation, we ran into several questions about how Lake handles native code linking and what the resulting artifact chain looks like.
 

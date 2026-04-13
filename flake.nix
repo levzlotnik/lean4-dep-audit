@@ -1,5 +1,5 @@
 {
-  description = "MyLeanTermAuditor: Audit Lean 4 expressions for dependencies (axioms, opaques, constants)";
+  description = "lean4-dep-audit: Audit Lean 4 expressions for dependencies (axioms, opaques, constants)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -19,7 +19,7 @@
           ];
 
           shellHook = ''
-            echo "Welcome to MyLeanTermAuditor development environment!"
+            echo "Welcome to lean4-dep-audit development environment!"
             echo "Run 'lake build' to compile the Lean code."
           '';
         };

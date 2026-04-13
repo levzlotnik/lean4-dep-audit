@@ -1,12 +1,12 @@
 import Lake
 open Lake DSL
 
-package MyLeanTermAuditor where
+package «lean4-dep-audit» where
   version := v!"0.1.0"
 
 require FfiFixture from "test-packages" / "ffi-fixture"
 
-lean_lib MyLeanTermAuditor
+lean_lib Lean4DepAudit
 
 lean_lib TestFixtures
 

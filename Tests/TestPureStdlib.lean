@@ -1,6 +1,6 @@
 import Tests.Helpers
 
-open Lean MyLeanTermAuditor
+open Lean Lean4DepAudit
 
 -- Test 1: Pure arithmetic — 0 findings with standard config
 run_cmd runTest "PureStdlib: pure arithmetic has 0 findings (standard)" do

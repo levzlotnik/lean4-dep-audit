@@ -4,6 +4,6 @@ open Lake DSL
 package UserProject where
   version := v!"0.1.0"
 
-require MyLeanTermAuditor from ".." / ".."
+require «lean4-dep-audit» from ".." / ".."
 
 lean_lib UserProject

@@ -12,11 +12,11 @@
   Well-formed FFI C uses simple, explicit types. Obfuscation is suspicious.
 -/
 import Lean
-import MyLeanTermAuditor.Types
+import Lean4DepAudit.Types
 
 open Lean Meta System
 
-namespace MyLeanTermAuditor
+namespace Lean4DepAudit
 
 -- ============================================================================
 -- Part 1: C Type representation
@@ -433,4 +433,4 @@ def resolveTypeAudit (result : AuditResult) (env : Environment) (sysroot : FileP
   | .ok ((r, _), _) => return r
   | .error _ => return result
 
-end MyLeanTermAuditor
+end Lean4DepAudit

@@ -1,10 +1,10 @@
 import Lean
-import MyLeanTermAuditor.Types
-import MyLeanTermAuditor.StackTrace
+import Lean4DepAudit.Types
+import Lean4DepAudit.StackTrace
 
 open Lean
 
-namespace MyLeanTermAuditor
+namespace Lean4DepAudit
 
 namespace Filter
 
@@ -181,4 +181,4 @@ def AuditConfig.standard : AuditConfig where
     || (Filter.nonStandardExternsOnly ctx && Filter.runtimeOnly ctx)
   shouldDescend := Descend.skipProofTerms
 
-end MyLeanTermAuditor
+end Lean4DepAudit

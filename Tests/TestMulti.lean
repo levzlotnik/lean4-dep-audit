@@ -1,6 +1,6 @@
 import Tests.Helpers
 
-open Lean MyLeanTermAuditor
+open Lean Lean4DepAudit
 
 -- Test 1: Multi-constant audit shares visited set
 run_cmd runTest "Multi: shared AuditResult deduplicates findings" do

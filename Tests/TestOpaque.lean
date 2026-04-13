@@ -1,6 +1,6 @@
 import Tests.Helpers
 
-open Lean MyLeanTermAuditor
+open Lean Lean4DepAudit
 
 -- Test 1: Partial def found through caller (classified + transitively reached)
 run_cmd runTest "Opaque: testCallsPartial finds testPartialFn as opaque_ .partial_" do

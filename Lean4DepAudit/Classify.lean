@@ -1,9 +1,9 @@
 import Lean
-import MyLeanTermAuditor.Types
+import Lean4DepAudit.Types
 
 open Lean
 
-namespace MyLeanTermAuditor
+namespace Lean4DepAudit
 
 /-- Get the extern symbol name for a constant, if it has one. -/
 def getExternSymbol? (env : Environment) (name : Name) : Option String :=
@@ -45,4 +45,4 @@ def classifyConst (env : Environment) (ci : ConstantInfo) : Option Finding :=
     | .opaqueInfo info => some (.opaque_ (classifyOpaqueKind env info))
     | _                => none
 
-end MyLeanTermAuditor
+end Lean4DepAudit

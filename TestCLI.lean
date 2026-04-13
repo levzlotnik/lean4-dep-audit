@@ -1,13 +1,13 @@
 -- Cross-project CLI integration tests for `lake exe audit`.
--- Tests run from test-packages/user-project/, which `require`s MyLeanTermAuditor,
--- simulating a real user's project. Invokes `lake exe MyLeanTermAuditor/audit`.
+-- Tests run from test-packages/user-project/, which `require`s lean4-dep-audit,
+-- simulating a real user's project. Invokes `lake exe lean4-dep-audit/audit`.
 --
 -- Run: `lake build audit && lake build test_cli && lake exe test_cli`
 
 import Lean
-import MyLeanTermAuditor
+import Lean4DepAudit
 
-open Lean MyLeanTermAuditor
+open Lean Lean4DepAudit
 
 -- ============================================================================
 -- Test infrastructure
@@ -16,11 +16,11 @@ open Lean MyLeanTermAuditor
 /-- The user project directory where we simulate a real user running the auditor. -/
 def userProjectDir : String := "test-packages/user-project"
 
-/-- Run `lake exe MyLeanTermAuditor/audit <args>` from the user project directory. -/
+/-- Run `lake exe lean4-dep-audit/audit <args>` from the user project directory. -/
 def execAudit (args : Array String) : IO IO.Process.Output :=
   IO.Process.output {
     cmd := "lake"
-    args := #["exe", "MyLeanTermAuditor/audit"] ++ args
+    args := #["exe", "lean4-dep-audit/audit"] ++ args
     cwd := some userProjectDir
   }
 

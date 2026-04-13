@@ -1,7 +1,7 @@
-import MyLeanTermAuditor
+import Lean4DepAudit
 import TestFixtures
 
-open Lean Elab Command Meta MyLeanTermAuditor
+open Lean Elab Command Meta Lean4DepAudit
 
 /-- Assert that an `AuditResult` has exactly `n` findings. -/
 def assertNumFindings (result : AuditResult) (expected : Nat) (ctx : String := "") : MetaM Unit := do

@@ -14,7 +14,7 @@ def String.hasSubstr (haystack needle : String) : Bool :=
         if (haystack.drop i).startsWith needle then return true
       return false
 
-namespace MyLeanTermAuditor
+namespace Lean4DepAudit
 
 /-- Sub-classification of opaque constants.
     Lean 4 uses `opaque` in the Environment for several distinct purposes. -/
@@ -88,7 +88,7 @@ instance : ToString ExprPath := ⟨ExprPath.toString⟩
 
 /-- Source location of a constant's declaration. -/
 structure SourceLocation where
-  /-- Module (e.g. `Init.Prelude`, `MyLeanTermAuditor.Types`). -/
+  /-- Module (e.g. `Init.Prelude`, `Lean4DepAudit.Types`). -/
   module   : Name
   /-- Line and column of the declaration, if available. -/
   range?   : Option DeclarationRange := none
@@ -360,4 +360,4 @@ def AuditResult.serialize (result : AuditResult) (names : Array Name)
   drill    := drills.map DrillResult.serialize
 }
 
-end MyLeanTermAuditor
+end Lean4DepAudit

@@ -1,7 +1,7 @@
 import Tests.Helpers
 import FfiFixture
 
-open Lean MyLeanTermAuditor
+open Lean Lean4DepAudit
 
 /-! # FFI tests
 
