@@ -127,6 +127,35 @@ drill:
 The drill answers: "which *direct* dependencies of `ffiChainRoot` are on the path
 to `ffiAdd`?" Answer: `callsFfiAdd`.
 
+### Detecting FFI type mismatches
+
+When the Lean declared type doesn't match the C function signature, the auditor
+flags it with the expected vs actual C signatures side by side:
+
+```
+$ lake exe audit FfiFixture.callsMismatchedFfi --import FfiFixture
+```
+
+```yaml
+findings:
+  - name: FfiFixture.ffiWrongRet
+    kind: extern "test_ffi_wrong_ret"
+    type: "UInt32 → UInt32"
+    reachability: runtime
+    provenance: traced ".../ffi.c:33"
+    type-check: MISMATCH return type: expected uint32_t, got uint8_t
+    expected-c-sig: "uint32_t test_ffi_wrong_ret(uint32_t)"
+    actual-c-sig: "uint8_t test_ffi_wrong_ret(uint32_t)"
+  - name: FfiFixture.ffiWrongArity
+    kind: extern "test_ffi_wrong_arity"
+    type: "UInt32 → UInt32"
+    reachability: runtime
+    provenance: traced ".../ffi.c:45"
+    type-check: MISMATCH parameter count: expected 1, got 2
+    expected-c-sig: "uint32_t test_ffi_wrong_arity(uint32_t)"
+    actual-c-sig: "uint32_t test_ffi_wrong_arity(uint32_t, uint32_t)"
+```
+
 ### Filter DSL
 
 ```bash
@@ -185,12 +214,12 @@ immediate dependency intersection on the pre-computed DAG.
 
 ## Tests
 
-**69 tests. All passing.**
+**77 tests. All passing.**
 
-- **38 unit tests** (`lake build Tests`) -- `run_cmd` blocks that fail the build
+- **42 unit tests** (`lake build Tests`) -- `run_cmd` blocks that fail the build
   on assertion failure. Cover axiom/extern/opaque detection, drill-down, multi-constant
-  audits, type info, and all 4 provenance classifications.
-- **31 CLI integration tests** (`lake build test_cli && lake exe test_cli`) --
+  audits, type info, provenance classifications, and C type compatibility checking.
+- **35 CLI integration tests** (`lake build test_cli && lake exe test_cli`) --
   shell out to the compiled CLI, check YAML substring matching and JSON
   round-trip deserialization.
 - **Real FFI test fixture** -- a separate Lake package (`test-packages/ffi-fixture/`)
@@ -204,13 +233,22 @@ lake build audit && lake build test_cli && lake exe test_cli  # CLI tests
 
 ## Known Limitations
 
-- **Interpreter bottleneck:** The `#audit` elaborator command runs in the Lean
-  interpreter, which is ~100x slower than compiled code. The CLI (`lake exe audit`)
-  is the fast path. `set_option profiler true` on the `#audit` demos shows ~55s
-  interpretation for `IO Unit` constants.
-- **C parser is intentionally simple:** The C signature parser in `ExternCAudit.lean`
-  is a hand-rolled tokenizer. If it can't parse a signature cleanly, *that is the finding*
-  -- it reports `unparseable` rather than guessing.
+- **`#audit` interpreter overhead:** The `#audit` elaborator command is slow when
+  auditing constants defined in the same file, because their definitions are
+  interpreted rather than compiled. For constants imported from already-compiled
+  modules (e.g., `#audit IO.println` in a file that imports `Init`), `#audit` is
+  near-instant. The CLI (`lake exe audit`) always runs compiled and is the fast path.
+- **C parser accepts a limited subset of C:** The signature parser is a hand-rolled
+  tokenizer that accepts the form
+  `[LEAN_EXPORT] [static] [inline] <rettype> <funcname>(<params>)`. It recognizes
+  `uint8_t`, `uint16_t`, `uint32_t`, `uint64_t`, `size_t`, `double`, `void`,
+  `lean_object*`, `lean_obj_arg`, `lean_obj_res`, `b_lean_obj_arg`, and
+  `b_lean_obj_res`. It strips `LEAN_EXPORT`, `LEAN_ALWAYS_INLINE`, `static`, and
+  `inline` prefixes, and handles pointer normalization (`type *` → `type*`).
+  Any signature that doesn't match this pattern — `__attribute__`, macros, variadic
+  args, function pointers, multi-line `#define` wrappers — is reported as
+  `unparseable`. Well-formed Lean FFI C code uses these simple types; anything
+  else at the FFI boundary is worth a manual look.
 - **`binaryOnly` provenance is shelved:** Some extern symbols exist only in `.a`
   files with no traceable `.c` source (e.g., Lean compiler-generated code). The
   classification for this case is deferred pending investigation with the Lake team.
@@ -235,8 +273,8 @@ Lean4DepAudit/
 Main.lean                    -- CLI entry point
 Demo.lean                    -- #audit command examples
 TestFixtures/                -- Constants with known audit properties
-Tests/                       -- 38 unit tests
-TestCLI.lean                 -- 31 CLI integration tests
+Tests/                       -- 42 unit tests
+TestCLI.lean                 -- 35 CLI integration tests
 test-packages/
   ffi-fixture/               -- Real extern_lib package with C source
   user-project/              -- Downstream consumer simulation for CLI tests

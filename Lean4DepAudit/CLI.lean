@@ -317,7 +317,8 @@ private def findingReachability (fi : FindingInfo) : String :=
 private def yamlFinding (fi : FindingInfo) : String :=
   let typeStr := if fi.typeStr.isEmpty then "unknown" else fi.typeStr
   let cLine := match fi.typeCheck with
-    | .compatible l | .mismatch _ l => if l > 0 then some l else none
+    | .compatible l => if l > 0 then some l else none
+    | .mismatch _ _ _ l => if l > 0 then some l else none
     | _ => none
   let provStr := match fi.provenance? with
     | some (.tracedToSource c _o _a) =>
@@ -333,7 +334,10 @@ private def yamlFinding (fi : FindingInfo) : String :=
     | none => ""
   let typeCheckStr := match fi.typeCheck with
     | .compatible _ => s!"\n    type-check: compatible"
-    | .mismatch d _ => s!"\n    type-check: MISMATCH {d}"
+    | .mismatch d e a _ =>
+      s!"\n    type-check: MISMATCH {d}" ++
+      s!"\n    expected-c-sig: \"{e}\"" ++
+      s!"\n    actual-c-sig: \"{a}\""
     | .unparseable r => s!"\n    type-check: UNPARSEABLE ({r})"
     | .notChecked => ""
   s!"  - name: {fi.name}\n" ++

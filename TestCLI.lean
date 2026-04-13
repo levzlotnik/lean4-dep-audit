@@ -224,7 +224,18 @@ def substrTests : Array SubstrTest := #[
     expectStdout := #["provenance: toolchain-runtime"] },
   { name := "yaml: provenance toolchain-header for header-only extern"
     args := #["String.append", "--import", "Init", "--config", "full"]
-    expectStdout := #["provenance: toolchain-header"] }
+    expectStdout := #["provenance: toolchain-header"] },
+
+  -- Type check mismatch YAML tests
+  { name := "yaml: return type mismatch detected"
+    args := #["FfiFixture.callsMismatchedFfi", "--import", "FfiFixture"]
+    expectStdout := #["type-check: MISMATCH return type", "expected-c-sig:", "actual-c-sig:"] },
+  { name := "yaml: parameter type mismatch detected"
+    args := #["FfiFixture.callsMismatchedFfi", "--import", "FfiFixture"]
+    expectStdout := #["type-check: MISMATCH param 1", "expected-c-sig:", "actual-c-sig:"] },
+  { name := "yaml: arity mismatch detected"
+    args := #["FfiFixture.callsMismatchedFfi", "--import", "FfiFixture"]
+    expectStdout := #["type-check: MISMATCH parameter count", "expected-c-sig:", "actual-c-sig:"] }
 ]
 
 def jsonTests : Array JsonTest := #[
@@ -361,7 +372,35 @@ def jsonTests : Array JsonTest := #[
         let allHaveProv := externFindings.all fun fi => fi.provenance?.isSome
         if !allHaveProv then .error "some extern findings have no provenance"
         else .ok ()
-  }
+  },
+
+  -- Type check: mismatches detected in JSON
+  { name := "json: type check mismatches for FFI fixture"
+    args := #["FfiFixture.callsMismatchedFfi", "--import", "FfiFixture"]
+    validate := fun r =>
+      let wrongRet := r.findings.find? (·.name == `FfiFixture.ffiWrongRet)
+      let wrongParam := r.findings.find? (·.name == `FfiFixture.ffiWrongParam)
+      let wrongArity := r.findings.find? (·.name == `FfiFixture.ffiWrongArity)
+      checks [
+        match wrongRet with
+        | some fi => match fi.typeCheck with
+          | .mismatch d _ _ _ => if d.hasSubstr "return type" then .ok ()
+            else .error s!"expected return type mismatch, got: {d}"
+          | other => .error s!"expected mismatch for ffiWrongRet, got {repr other}"
+        | none => .error "ffiWrongRet not in findings",
+        match wrongParam with
+        | some fi => match fi.typeCheck with
+          | .mismatch d _ _ _ => if d.hasSubstr "param 1" then .ok ()
+            else .error s!"expected param 1 mismatch, got: {d}"
+          | other => .error s!"expected mismatch for ffiWrongParam, got {repr other}"
+        | none => .error "ffiWrongParam not in findings",
+        match wrongArity with
+        | some fi => match fi.typeCheck with
+          | .mismatch d _ _ _ => if d.hasSubstr "parameter count" then .ok ()
+            else .error s!"expected arity mismatch, got: {d}"
+          | other => .error s!"expected mismatch for ffiWrongArity, got {repr other}"
+        | none => .error "ffiWrongArity not in findings"
+      ] }
 ]
 
 -- ============================================================================

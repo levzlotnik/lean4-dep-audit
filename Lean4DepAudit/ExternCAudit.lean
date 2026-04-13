@@ -383,7 +383,8 @@ def auditExternType (leanType : Expr) (cSig : CFuncSig) : MetaM TypeAuditResult 
 private def typeAuditToCheck : TypeAuditResult → CTypeCheckResult
   | .compatible line => .compatible (line := line)
   | .mismatch expected actual details line =>
-    .mismatch (details := s!"{details} (expected: {expected}, actual: {actual})") (line := line)
+    .mismatch (details := details) (expected := toString expected)
+      (actual := toString actual) (line := line)
   | .cSourceNotParseable reason => .unparseable reason
   | .cSourceNotFound => .notChecked
 

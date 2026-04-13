@@ -126,18 +126,18 @@ inductive SymbolProvenance where
 
 /-- Result of C type compatibility check for extern symbols. -/
 inductive CTypeCheckResult where
-  | compatible (line : Nat := 0)        -- C types match Lean declaration; line in C source
-  | mismatch (details : String) (line : Nat := 0) -- types don't match — CRITICAL finding
-  | unparseable (reason : String)       -- couldn't parse C source — SUS
-  | notChecked                          -- no C source to check (toolchain/unresolved)
+  | compatible (line : Nat := 0)
+  | mismatch (details : String) (expected : String) (actual : String) (line : Nat := 0)
+  | unparseable (reason : String)
+  | notChecked
   deriving Repr, BEq, Inhabited
 
 instance : ToString CTypeCheckResult where
   toString
-    | .compatible _    => "compatible"
-    | .mismatch d _    => s!"MISMATCH: {d}"
-    | .unparseable r   => s!"UNPARSEABLE: {r}"
-    | .notChecked      => "not-checked"
+    | .compatible _          => "compatible"
+    | .mismatch d _exp _act _ => s!"MISMATCH: {d}"
+    | .unparseable r         => s!"UNPARSEABLE: {r}"
+    | .notChecked            => "not-checked"
 
 -- ============================================================================
 -- First pass: fast classification (no paths)
@@ -286,16 +286,16 @@ inductive SymbolProvenanceSer where
 /-- Serializable version of CTypeCheckResult. -/
 inductive CTypeCheckResultSer where
   | compatible (line : Nat := 0)
-  | mismatch (details : String) (line : Nat := 0)
+  | mismatch (details : String) (expected : String) (actual : String) (line : Nat := 0)
   | unparseable (reason : String)
   | notChecked
   deriving Repr, ToJson, FromJson
 
 def CTypeCheckResult.serialize : CTypeCheckResult → CTypeCheckResultSer
-  | .compatible l    => .compatible l
-  | .mismatch d l    => .mismatch d l
-  | .unparseable r => .unparseable r
-  | .notChecked    => .notChecked
+  | .compatible l        => .compatible l
+  | .mismatch d e a l    => .mismatch d e a l
+  | .unparseable r       => .unparseable r
+  | .notChecked          => .notChecked
 
 def SymbolProvenance.serialize : SymbolProvenance → SymbolProvenanceSer
   | .tracedToSource c o a => .tracedToSource c o a

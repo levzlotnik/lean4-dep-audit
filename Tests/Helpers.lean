@@ -135,6 +135,40 @@ def assertUnresolved (result : AuditResult) (name : Name)
     | .unresolved => true
     | _ => false) "unresolved" ctx
 
+/-- Run audit with provenance + C type audit. Full pipeline. -/
+def runAuditWithTypeCheck (name : Name) (config : AuditConfig := AuditConfig.default)
+    : MetaM AuditResult := do
+  let env ← getEnv
+  let result := auditConst env config name
+  let result ← resolveLocations result
+  let searchPath ← Lean.searchPathRef.get
+  let result ← resolveProvenance result searchPath
+  let sysroot ← try Lean.findSysroot catch _ => pure (System.FilePath.mk "")
+  let result ← resolveTypeAudit result env sysroot
+  return result
+
+/-- Assert that a finding's typeCheck is `compatible`. -/
+def assertTypeCheckCompatible (result : AuditResult) (name : Name)
+    (ctx : String := "") : MetaM Unit := do
+  match result.findings.find? name with
+  | some fi =>
+    match fi.typeCheck with
+    | .compatible _ => pure ()
+    | other => throwError "{ctx}Expected typeCheck for '{name}' to be compatible, got {other}"
+  | none => throwError "{ctx}Expected '{name}' in findings, but it was not found"
+
+/-- Assert that a finding's typeCheck is `mismatch` with details containing a substring. -/
+def assertTypeCheckMismatch (result : AuditResult) (name : Name) (detailSubstr : String)
+    (ctx : String := "") : MetaM Unit := do
+  match result.findings.find? name with
+  | some fi =>
+    match fi.typeCheck with
+    | .mismatch details _ _ _ =>
+      unless details.hasSubstr detailSubstr do
+        throwError "{ctx}Expected typeCheck mismatch for '{name}' to contain \"{detailSubstr}\", got \"{details}\""
+    | other => throwError "{ctx}Expected typeCheck for '{name}' to be mismatch, got {other}"
+  | none => throwError "{ctx}Expected '{name}' in findings, but it was not found"
+
 /-- Lift a MetaM test body into a `run_cmd`-compatible CommandElabM. -/
 def runTest (name : String) (body : MetaM Unit) : CommandElabM Unit :=
   liftTermElabM <| Meta.MetaM.run' do

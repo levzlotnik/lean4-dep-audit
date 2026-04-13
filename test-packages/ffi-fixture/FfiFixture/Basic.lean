@@ -22,4 +22,22 @@ def callsBothFfi (x y : UInt32) (b : Bool) : UInt32 × Bool :=
 /-- A chain: callsFfiAdd → ffiAdd. Useful for drill-down testing. -/
 def ffiChainRoot : UInt32 := callsFfiAdd 10 20 + ffiConst42 ()
 
+-- ---------- Type mismatch fixtures ----------
+
+/-- Lean says UInt32 → UInt32, C returns uint8_t. Return type mismatch. -/
+@[extern "test_ffi_wrong_ret"]
+opaque ffiWrongRet : UInt32 → UInt32
+
+/-- Lean says UInt32 → UInt32 → UInt32, C takes (uint32_t, uint8_t). Param type mismatch. -/
+@[extern "test_ffi_wrong_param"]
+opaque ffiWrongParam : UInt32 → UInt32 → UInt32
+
+/-- Lean says UInt32 → UInt32, C takes two params. Arity mismatch. -/
+@[extern "test_ffi_wrong_arity"]
+opaque ffiWrongArity : UInt32 → UInt32
+
+/-- Caller that reaches all three mismatched externs. -/
+def callsMismatchedFfi (x y : UInt32) : UInt32 :=
+  ffiWrongRet x + ffiWrongParam x y + ffiWrongArity x
+
 end FfiFixture
