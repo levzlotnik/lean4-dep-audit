@@ -185,7 +185,7 @@ immediate dependency intersection on the pre-computed DAG.
 
 ## Tests
 
-69 tests total:
+**69 tests. All passing.**
 
 - **38 unit tests** (`lake build Tests`) -- `run_cmd` blocks that fail the build
   on assertion failure. Cover axiom/extern/opaque detection, drill-down, multi-constant
@@ -244,4 +244,4 @@ test-packages/
 
 ## License
 
-This project is not yet licensed. If you want to use it, open an issue.
+MIT. See [LICENSE](LICENSE).
